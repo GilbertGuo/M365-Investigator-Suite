@@ -30,6 +30,45 @@ replace/disable this integration. No subscription, API key, response data, or
 service license is included with this repository. IP-API is not affiliated with
 or endorsing this project.
 
+## Domain registration enrichment (RDAP)
+
+M365 Investigator Suite includes optional domain-registration enrichment using
+the Registration Data Access Protocol (RDAP). The integration is not used
+automatically. When an analyst runs **Enrich domains**, the tool extracts domain
+names from the selected sender and/or recipient fields; complete email
+addresses are not submitted.
+
+The tool first retrieves the public
+[IANA RDAP bootstrap registry](https://www.iana.org/assignments/rdap-dns/rdap-dns.xhtml)
+from `data.iana.org` to discover the authoritative service for each top-level
+domain. Retrieving the bootstrap registry does not send the queried domain to
+IANA. The extracted domain is then submitted over HTTPS to the authoritative
+RDAP endpoint listed by IANA. That endpoint may be operated by a registry,
+registrar, or another registration-data service provider and may redirect the
+request to another authoritative endpoint.
+
+Each RDAP operator can apply its own terms, privacy practices, acceptable-use
+rules, logging, access controls, and rate limits. A provider may receive the
+queried domain, the requester's public IP address, request time, user agent, and
+other ordinary network metadata. Analysts and organizations are responsible for
+ensuring that their queries are lawful and consistent with the applicable
+provider terms and their own evidence-handling requirements. See ICANN's
+[Information for RDAP Users](https://www.icann.org/en/contracted-parties/registry-operators/registration-data-access-protocol/information-for-rdap-users-31-08-2018-en)
+for background on the protocol and its providers.
+
+RDAP responses contain public registration data and can be incomplete,
+redacted, unavailable, delayed, or inaccurate. A registration date, registrar,
+status, or other returned value does not by itself establish domain ownership,
+attribution, legitimacy, or malicious intent. Automated domain-age and
+suspicious-mail results are investigation leads that require validation against
+original evidence and surrounding context.
+
+No RDAP subscription, nonpublic registration-data access, response-data
+license, or service-level guarantee is included with this repository. This
+integration does not use or include DomainTools services, accounts, or data.
+IANA, ICANN, registry operators, registrars, RDAP providers, and DomainTools are
+not affiliated with or endorsing this project.
+
 ## Microsoft application ID reference
 
 `ual_app/app_id_names.json` contains a local snapshot of public Microsoft
