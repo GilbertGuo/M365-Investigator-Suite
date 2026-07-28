@@ -22,6 +22,35 @@ class MessageSubjectTests(unittest.TestCase):
         row = {"Item.InternetMessageId": "<flat@example.com>", "Item.Subject": "Flat subject"}
         self.assertEqual(extract_message_subject_pairs(row), [("<flat@example.com>", "Flat subject")])
 
+    def test_pairs_item_and_item1_python_literal_columns(self):
+        row = {
+            "Operation": "Send",
+            "Item": "{'Subject': 'Primary subject', 'InternetMessageId': '<primary@example.com>'}",
+            "Item.1": "{'Subject': 'Secondary subject', 'InternetMessageId': '<secondary@example.com>'}",
+        }
+        self.assertEqual(extract_message_subject_pairs(row), [
+            ("<primary@example.com>", "Primary subject"),
+            ("<secondary@example.com>", "Secondary subject"),
+        ])
+
+    def test_pairs_python_literal_payloads_for_non_access_operations(self):
+        item_operations = ("Send", "Create", "Update")
+        affected_operations = ("MoveToDeletedItems", "SoftDelete", "HardDelete")
+        for operation in item_operations:
+            with self.subTest(operation=operation):
+                row = {
+                    "Operation": operation,
+                    "Item": "{'Subject': 'Item subject', 'InternetMessageId': '<item@example.com>'}",
+                }
+                self.assertEqual(extract_message_subject_pairs(row), [("<item@example.com>", "Item subject")])
+        for operation in affected_operations:
+            with self.subTest(operation=operation):
+                row = {
+                    "Operation": operation,
+                    "AffectedItems": "[{'Subject': 'Affected subject', 'InternetMessageId': '<affected@example.com>'}]",
+                }
+                self.assertEqual(extract_message_subject_pairs(row), [("<affected@example.com>", "Affected subject")])
+
     def test_supports_single_quoted_regex_shape_and_missing_subject(self):
         row = {
             "Raw": "{'InternetMessageId': '<regex@example.com>', 'Subject': 'Regex subject'}",

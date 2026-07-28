@@ -1,3 +1,4 @@
+import ast
 import csv
 import io
 import ipaddress
@@ -226,11 +227,14 @@ def extract_message_subject_pairs(row: Dict[str, Any]) -> List[Tuple[str, str]]:
             add(value, subject)
         if isinstance(value, str):
             text = value.strip()
-            if text.startswith(("[", "{")):
+            if text.startswith(("[", "{")) and "internetmessageid" in text.casefold():
                 try:
                     walk(json.loads(text))
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    try:
+                        walk(ast.literal_eval(text))
+                    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                        pass
             for message_id, subject in MESSAGE_SUBJECT_RE.findall(text):
                 add(message_id, subject)
 
