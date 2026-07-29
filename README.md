@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://medium.com/@gyw765419384/introducing-m365-investigator-suite-a-local-first-workbench-for-microsoft-365-investigations-952093aef4ca">Read the introduction on Medium</a>
+</p>
+
+<p align="center">
   <a href="https://buymeacoffee.com/gilbertguo"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-Support%20the%20project-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=000000" alt="Buy Me a Coffee"></a>
 </p>
 
