@@ -514,7 +514,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
 
     def export_message_subjects(self, case_id, params):
-        rows = STORE.exported_message_subject_pairs(case_id)
+        rows = STORE.exported_message_subject_pairs(case_id, self.filtered(case_id, params))
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=["InternetMessageId", "Subject"])
         writer.writeheader()

@@ -1138,14 +1138,24 @@ $('#messageAction').onclick=async()=>{
   if(!state.columns.includes('InternetMessageIDs')) state.columns.push('InternetMessageIDs');
   saveColumnPreferences(); renderPicker(); await loadRows(); toast(`${data.count} unique Message ID${data.count===1?'':'s'} collected into the table`);
 };
+function currentUalFilterParams(){
+  const params=new URLSearchParams({q:state.query});
+  if(state.operation)params.set('operation',state.operation);
+  if(state.category)params.set('category',state.category);
+  return params;
+}
+async function runMessageSubjectExtraction(refreshTable=true){
+  const data=await api(`/api/cases/${activeUalId()}/extract-message-subjects?${currentUalFilterParams()}`,{method:'POST'});
+  state.overview.columns=data.columns;
+  state.columns=addContextColumns(state.columns,MESSAGE_SUBJECT_COLUMNS,data.columns);
+  saveColumnPreferences();renderPicker();
+  if(refreshTable)await loadRows();
+  return data;
+}
 $('#messageSubjectAction').onclick=async()=>{
   const button=$('#messageSubjectAction'), original=button.textContent; button.disabled=true; button.textContent='Extracting…';
   try {
-    const p=new URLSearchParams({q:state.query}); if(state.operation)p.set('operation',state.operation); if(state.category)p.set('category',state.category);
-    const data=await api(`/api/cases/${activeUalId()}/extract-message-subjects?${p}`,{method:'POST'});
-    state.overview.columns=data.columns;
-    state.columns=addContextColumns(state.columns,MESSAGE_SUBJECT_COLUMNS,data.columns);
-    saveColumnPreferences(); renderPicker(); await loadRows();
+    const data=await runMessageSubjectExtraction();
     toast(`${data.pairCount.toLocaleString()} message/subject association${data.pairCount===1?'':'s'} found in ${data.rowCount.toLocaleString()} row${data.rowCount===1?'':'s'}`);
   } catch(error) {toast(error.message);}
   finally {button.disabled=false;button.textContent=original;}
@@ -1153,11 +1163,21 @@ $('#messageSubjectAction').onclick=async()=>{
 $('#messageSubjectExport').onclick=async()=>{
   const button=$('#messageSubjectExport'),original=button.textContent;button.disabled=true;button.textContent='Preparing CSV…';
   try{
-    const response=await fetch(`/api/cases/${activeUalId()}/message-subject-export`);
+    const exportUrl=()=>`/api/cases/${activeUalId()}/message-subject-export?${currentUalFilterParams()}`;
+    let response=await fetch(exportUrl());
     if(!response.ok){
       let message='Run MessageIds + Subjects before exporting';
       try{message=(await response.json()).error||message;}catch{}
-      throw new Error(message);
+      if(!message.includes('Run MessageIds + Subjects'))throw new Error(message);
+      button.textContent='Running MessageIds + Subjects…';
+      toast('MessageIds + Subjects has not been run. Running it before exporting the current filtered view…');
+      await runMessageSubjectExtraction();
+      button.textContent='Preparing CSV…';
+      response=await fetch(exportUrl());
+      if(!response.ok){
+        try{message=(await response.json()).error||message;}catch{}
+        throw new Error(message);
+      }
     }
     const blob=await response.blob(),disposition=response.headers.get('Content-Disposition')||'';
     const filename=disposition.match(/filename="([^"]+)"/i)?.[1]||'message-ids-subjects.csv';

@@ -1,7 +1,10 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from ual_app.core import extract_message_subject_pairs, message_subject_export_rows, normalize_message_id_display
+from ual_app.store import CaseStore
 
 
 class MessageSubjectTests(unittest.TestCase):
@@ -77,6 +80,25 @@ class MessageSubjectTests(unittest.TestCase):
             {"InternetMessageId": "<first@example.com>", "Subject": "First subject"},
             {"InternetMessageId": "<second@example.com>", "Subject": "Second subject"},
         ])
+
+    def test_store_export_uses_only_the_supplied_filtered_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            case_id = "abcdef123456"
+            case_dir = root / case_id
+            case_dir.mkdir()
+            (case_dir / "meta.json").write_text(json.dumps({"id": case_id, "name": "Synthetic"}), encoding="utf-8")
+            source_rows = [
+                {"_Row": 1, "Raw": "{'InternetMessageId': '<first@example.com>', 'Subject': 'First subject'}"},
+                {"_Row": 2, "Raw": "{'InternetMessageId': '<second@example.com>', 'Subject': 'Second subject'}"},
+            ]
+            (case_dir / "rows.jsonl").write_text("".join(json.dumps(row) + "\n" for row in source_rows), encoding="utf-8")
+            store = CaseStore(root)
+            store.extract_message_subjects(case_id)
+            filtered_rows = [row for row in store.rows(case_id) if row["_Row"] == 2]
+            self.assertEqual(store.exported_message_subject_pairs(case_id, filtered_rows), [
+                {"InternetMessageId": "<second@example.com>", "Subject": "Second subject"},
+            ])
 
 
 if __name__ == "__main__":

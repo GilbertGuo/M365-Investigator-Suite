@@ -272,10 +272,10 @@ class CaseStore:
             return findings
         except (OSError, ValueError, AttributeError): return {}
 
-    def exported_message_subject_pairs(self, case_id: str) -> List[Dict[str, str]]:
+    def exported_message_subject_pairs(self, case_id: str, rows: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, str]]:
         if not (self._dir(case_id) / "message-subject-analysis.json").is_file():
             raise ValueError("Run MessageIds + Subjects before exporting")
-        return message_subject_export_rows(self.rows(case_id))
+        return message_subject_export_rows(self.rows(case_id) if rows is None else rows)
 
     def event_rows(self, case_id: str):
         path = self._dir(case_id) / "event-summary.json"
