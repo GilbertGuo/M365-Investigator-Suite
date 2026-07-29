@@ -20,6 +20,38 @@ class ImpossibleTravelTests(unittest.TestCase):
         self.assertEqual(finding["PreviousISP"], "Previous ISP")
         self.assertEqual(finding["CurrentISP"], "Current ISP")
 
+    def test_country_change_window_is_configurable(self):
+        rows = [
+            {"_Row": 1, "Operation": "UserLoggedIn", "CreationTime": "2026-01-01T10:00:00",
+             "UserId": "user@example.com", "ClientIP": "198.51.100.1"},
+            {"_Row": 2, "Operation": "UserLoggedIn", "CreationTime": "2026-01-01T11:00:00",
+             "UserId": "user@example.com", "ClientIP": "203.0.113.2"},
+        ]
+        enrichment = {
+            "198.51.100.1": {"Lookup_Status": "Success", "Country": "United States", "Region": "New York"},
+            "203.0.113.2": {"Lookup_Status": "Success", "Country": "Canada", "Region": "Ontario"},
+        }
+        settings = {"useCountryChange": True, "countryHours": 0.5, "useRegionChange": False,
+                    "useElevatedWindow": False}
+        self.assertEqual(analyze_impossible_travel(rows, enrichment, ["ClientIP"], settings), {})
+
+    def test_elevated_window_signals_are_selectable(self):
+        rows = [
+            {"_Row": 1, "Operation": "UserLoggedIn", "CreationTime": "2026-01-01T10:00:00",
+             "UserId": "user@example.com", "ClientIP": "198.51.100.1"},
+            {"_Row": 2, "Operation": "UserLoggedIn", "CreationTime": "2026-01-01T20:00:00",
+             "UserId": "user@example.com", "ClientIP": "203.0.113.2"},
+        ]
+        enrichment = {
+            "198.51.100.1": {"Lookup_Status": "Success", "Country": "United States", "Region": "New York"},
+            "203.0.113.2": {"Lookup_Status": "Success", "Country": "Canada", "Region": "Ontario", "Hosting": True},
+        }
+        enabled = {"useCountryChange": False, "useRegionChange": False, "useElevatedWindow": True,
+                   "elevatedHours": 12, "useHosting": True, "useProxy": False, "useDeviceRisk": False}
+        disabled = dict(enabled, useHosting=False, useProxy=True)
+        self.assertIn("2", analyze_impossible_travel(rows, enrichment, ["ClientIP"], enabled))
+        self.assertEqual(analyze_impossible_travel(rows, enrichment, ["ClientIP"], disabled), {})
+
     def test_travel_risk_and_score_sorting(self):
         rows = [
             {"Travel.Risk": "High", "Travel.Score": 10},

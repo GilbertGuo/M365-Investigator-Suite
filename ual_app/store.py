@@ -7,7 +7,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .app_mapping import add_app_name_mapping
 from .core import IP_API_OUTPUT_FIELDS, RDAP_OUTPUT_FIELDS, add_inbox_rule_review, add_login_review, analyze_impossible_travel, analyze_suspicious_logins, build_event_summary, build_message_trace_event_summary, email_domains, extract_message_subject_pairs, format_message_id, hunt_suspicious_message_trace, message_trace_ip_columns, normalize_ip, normalize_message_id_display, parse_message_trace_rows, parse_rows, read_upload, row_columns, summarize, utc_now
@@ -654,11 +654,11 @@ class CaseStore:
         try: return json.loads(path.read_text(encoding="utf-8")).get("findings", {})
         except (OSError, ValueError, AttributeError): return {}
 
-    def hunt_impossible_travel(self, case_id: str) -> Dict[str, Any]:
+    def hunt_impossible_travel(self, case_id: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         findings = analyze_impossible_travel(self.base_rows(case_id), self.enrichment(case_id),
-                                             self.enrichment_columns(case_id))
+                                             self.enrichment_columns(case_id), options)
         payload = {"analyzedAt": utc_now(), "method": "Country/region temporal heuristic",
-                   "findingCount": len(findings), "findings": findings}
+                   "findingCount": len(findings), "options": options or {}, "findings": findings}
         (self._dir(case_id) / "travel-analysis.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
         self.invalidate(case_id)
         return payload
@@ -668,11 +668,11 @@ class CaseStore:
         try: return json.loads(path.read_text(encoding="utf-8")).get("findings", {})
         except (OSError, ValueError, AttributeError): return {}
 
-    def hunt_suspicious_logins(self, case_id: str) -> Dict[str, Any]:
+    def hunt_suspicious_logins(self, case_id: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         findings = analyze_suspicious_logins(self.base_rows(case_id), self.enrichment(case_id),
-                                             self.enrichment_columns(case_id))
+                                             self.enrichment_columns(case_id), options)
         payload = {"analyzedAt": utc_now(), "method": "Infrastructure and device-posture heuristic",
-                   "findingCount": len(findings), "findings": findings}
+                   "findingCount": len(findings), "options": options or {}, "findings": findings}
         (self._dir(case_id) / "suspicious-login-analysis.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
         self.invalidate(case_id)
         return payload

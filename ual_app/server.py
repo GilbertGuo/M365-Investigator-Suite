@@ -283,9 +283,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "enrich":
                 return self.enrich(parts[2], parse_qs(parsed.query))
             if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "hunt-travel":
-                return self.hunt_travel(parts[2])
+                return self.hunt_travel(parts[2], self.read_json())
             if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "hunt-suspicious-logins":
-                return self.hunt_suspicious_logins(parts[2])
+                return self.hunt_suspicious_logins(parts[2], self.read_json())
             if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "extract-message-subjects":
                 return self.extract_message_subjects(parts[2], parse_qs(parsed.query))
             if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "map-app-ids":
@@ -664,14 +664,14 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("The current Message Trace query contains no rows to tag")
         self.json_response(STORE.set_message_trace_row_tags(case_id, trace_id, [row.get("_Row") for row in rows], tagged))
 
-    def hunt_travel(self, case_id):
-        analysis = STORE.hunt_impossible_travel(case_id)
+    def hunt_travel(self, case_id, options):
+        analysis = STORE.hunt_impossible_travel(case_id, options)
         overview = STORE.overview(case_id)
         self.json_response({"findingCount": analysis["findingCount"], "analyzedAt": analysis["analyzedAt"],
                             "method": analysis["method"], "columns": overview["columns"]})
 
-    def hunt_suspicious_logins(self, case_id):
-        analysis = STORE.hunt_suspicious_logins(case_id)
+    def hunt_suspicious_logins(self, case_id, options):
+        analysis = STORE.hunt_suspicious_logins(case_id, options)
         overview = STORE.overview(case_id)
         self.json_response({"findingCount": analysis["findingCount"], "analyzedAt": analysis["analyzedAt"],
                             "method": analysis["method"], "columns": overview["columns"]})

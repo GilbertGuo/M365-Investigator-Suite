@@ -1034,40 +1034,53 @@ $('#exportForm').onsubmit=event=>{
   location.href=isMtl?`/api/cases/${state.caseId}/message-traces/${encodeURIComponent(messageTraceState.traceId)}/export?${p}`:`/api/cases/${activeUalId()}/export?${p}`;
 };
 
-$('#suspiciousLoginAction').onclick=async()=>{
-  const button=$('#suspiciousLoginAction'); const original=button.textContent; button.disabled=true; button.textContent='Hunting logins…';
+function openLoginHuntDrawer(drawer,status,message){
+  $$('.drawer').forEach(item=>item.classList.add('hidden'));
+  if(!state.overview?.enrichmentColumns?.length){
+    $('#enrichStatus').className='status error';$('#enrichStatus').textContent=message;$('#enrichDrawer').classList.remove('hidden');toast(message);return false;
+  }
+  $(status).className='status';$(status).textContent='';$(drawer).classList.remove('hidden');return true;
+}
+function updateSuspiciousLoginControls(){
+  $('#loginTrustedCountries').disabled=!$('#loginUseCountry').checked;
+  const infrastructure=$('#loginUseProxy').checked||$('#loginUseHosting').checked;
+  $('#loginRequireDeviceRisk').disabled=!infrastructure;
+  $('#loginMissingDeviceRisky').disabled=!infrastructure||!$('#loginRequireDeviceRisk').checked;
+}
+['#loginUseCountry','#loginUseProxy','#loginUseHosting','#loginRequireDeviceRisk'].forEach(selector=>$(selector).onchange=updateSuspiciousLoginControls);
+$('#suspiciousLoginAction').onclick=()=>{if(openLoginHuntDrawer('#suspiciousLoginDrawer','#suspiciousLoginHuntStatus','Run IP enrichment before hunting suspicious logins.'))updateSuspiciousLoginControls();};
+$('#closeSuspiciousLoginHunt').onclick=()=>$('#suspiciousLoginDrawer').classList.add('hidden');
+$('#suspiciousLoginHuntButton').onclick=async()=>{
+  const button=$('#suspiciousLoginHuntButton'),status=$('#suspiciousLoginHuntStatus');button.disabled=true;status.className='status';status.textContent='Hunting login activity…';
+  const trustedCountries=$('#loginTrustedCountries').value.split(/[\n,]+/).map(value=>value.trim()).filter(Boolean);
   try {
-    const data=await api(`/api/cases/${activeUalId()}/hunt-suspicious-logins`,{method:'POST'});
-    state.overview.columns=data.columns; state.category='logins'; state.operation=''; state.page=1;
-    state.query='SuspiciousLogin.Flag:=True'; $('#query').value=state.query;
+    const data=await api(`/api/cases/${activeUalId()}/hunt-suspicious-logins`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({useCountry:$('#loginUseCountry').checked,trustedCountries,useProxy:$('#loginUseProxy').checked,useHosting:$('#loginUseHosting').checked,requireDeviceRisk:$('#loginRequireDeviceRisk').checked,missingDeviceRisky:$('#loginMissingDeviceRisky').checked})});
+    state.overview.columns=data.columns;state.category='logins';state.operation='';state.page=1;state.query='SuspiciousLogin.Flag:=True';$('#query').value=state.query;
     state.columns=addContextColumns(restoreColumnPreferences(state.overview),SUSPICIOUS_LOGIN_COLUMNS,data.columns);
-    renderOverview(); renderPicker(); await loadRows();
+    $('#suspiciousLoginDrawer').classList.add('hidden');renderOverview();renderPicker();await loadRows();
     toast(data.findingCount?`${data.findingCount} suspicious login${data.findingCount===1?'':'s'} found`:'No suspicious logins found');
-  } catch(error) {
-    if(error.message.toLowerCase().includes('ip enrichment')) {
-      $('#enrichDrawer').classList.remove('hidden'); $('#enrichStatus').className='status error';
-      $('#enrichStatus').textContent='Run IP enrichment before hunting suspicious logins.';
-    }
-    toast(error.message);
-  } finally {button.disabled=false;button.textContent=original;}
+  }catch(error){status.className='status error';status.textContent=error.message;toast(error.message);}
+  finally{button.disabled=false;}
 };
-
-$('#travelAction').onclick=async()=>{
-  const button=$('#travelAction'); const original=button.textContent; button.disabled=true; button.textContent='Analyzing travel…';
+function updateTravelHuntControls(){
+  $('#travelCountryHours').disabled=!$('#travelUseCountryChange').checked;
+  $('#travelRegionHours').disabled=!$('#travelUseRegionChange').checked;
+  const elevated=$('#travelUseElevatedWindow').checked;
+  ['#travelElevatedHours','#travelUseHosting','#travelUseProxy','#travelUseDeviceRisk'].forEach(selector=>$(selector).disabled=!elevated);
+}
+['#travelUseCountryChange','#travelUseRegionChange','#travelUseElevatedWindow'].forEach(selector=>$(selector).onchange=updateTravelHuntControls);
+$('#travelAction').onclick=()=>{if(openLoginHuntDrawer('#travelHuntDrawer','#travelHuntStatus','Run IP enrichment before hunting for impossible travel.'))updateTravelHuntControls();};
+$('#closeTravelHunt').onclick=()=>$('#travelHuntDrawer').classList.add('hidden');
+$('#travelHuntButton').onclick=async()=>{
+  const button=$('#travelHuntButton'),status=$('#travelHuntStatus');button.disabled=true;status.className='status';status.textContent='Analyzing login travel…';
   try {
-    const data=await api(`/api/cases/${activeUalId()}/hunt-travel`,{method:'POST'});
-    state.overview.columns=data.columns; state.category='logins'; state.operation=''; state.page=1;
-    state.query='Travel.Flag:=True'; $('#query').value=state.query;
+    const data=await api(`/api/cases/${activeUalId()}/hunt-travel`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({useCountryChange:$('#travelUseCountryChange').checked,countryHours:Number($('#travelCountryHours').value||12),useRegionChange:$('#travelUseRegionChange').checked,regionHours:Number($('#travelRegionHours').value||3),useElevatedWindow:$('#travelUseElevatedWindow').checked,elevatedHours:Number($('#travelElevatedHours').value||24),useHosting:$('#travelUseHosting').checked,useProxy:$('#travelUseProxy').checked,useDeviceRisk:$('#travelUseDeviceRisk').checked})});
+    state.overview.columns=data.columns;state.category='logins';state.operation='';state.page=1;state.query='Travel.Flag:=True';$('#query').value=state.query;
     state.columns=addContextColumns(restoreColumnPreferences(state.overview),TRAVEL_COLUMNS,data.columns);
-    renderOverview(); renderPicker(); await loadRows();
+    $('#travelHuntDrawer').classList.add('hidden');renderOverview();renderPicker();await loadRows();
     toast(data.findingCount?`${data.findingCount} impossible-travel candidate${data.findingCount===1?'':'s'} found`:'No impossible-travel candidates found');
-  } catch(error) {
-    if(error.message.toLowerCase().includes('ip enrichment')) {
-      $('#enrichDrawer').classList.remove('hidden'); $('#enrichStatus').className='status error';
-      $('#enrichStatus').textContent='Run IP enrichment before hunting for impossible travel.';
-    }
-    toast(error.message);
-  } finally {button.disabled=false;button.textContent=original;}
+  }catch(error){status.className='status error';status.textContent=error.message;toast(error.message);}
+  finally{button.disabled=false;}
 };
 
 $('#messageAction').onclick=async()=>{

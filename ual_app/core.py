@@ -769,9 +769,25 @@ def _audit_time(value: Any) -> Optional[datetime]:
 
 
 def analyze_impossible_travel(rows: List[Dict[str, Any]], enrichment: Dict[str, Dict[str, Any]],
-                              enriched_ip_columns: List[str]) -> Dict[str, Dict[str, Any]]:
+                              enriched_ip_columns: List[str], options: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
     if not enrichment or not enriched_ip_columns:
         raise ValueError("IP enrichment is required before running Impossible Travel")
+    if options is not None and not isinstance(options, dict):
+        raise ValueError("Impossible Travel options must be an object")
+    options = options or {}
+    use_country_change = options.get("useCountryChange", True) is True
+    use_region_change = options.get("useRegionChange", True) is True
+    use_elevated_window = options.get("useElevatedWindow", True) is True
+    country_hours = max(0.01, min(float(options.get("countryHours", 12)), 720))
+    region_hours = max(0.01, min(float(options.get("regionHours", 3)), 720))
+    elevated_hours = max(0.01, min(float(options.get("elevatedHours", 24)), 720))
+    use_hosting = options.get("useHosting", True) is True
+    use_proxy = options.get("useProxy", True) is True
+    use_device_risk = options.get("useDeviceRisk", True) is True
+    if not (use_country_change or use_region_change or use_elevated_window):
+        raise ValueError("Select at least one Impossible Travel rule")
+    if use_elevated_window and not (use_hosting or use_proxy or use_device_risk):
+        raise ValueError("Select at least one elevated-risk signal")
     candidates: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     preferred_ip = "ClientIP" if "ClientIP" in enriched_ip_columns else enriched_ip_columns[0]
     for row in rows:
@@ -798,24 +814,27 @@ def analyze_impossible_travel(rows: List[Dict[str, Any]], enrichment: Dict[str, 
             old_region, new_region = str(before.get("Region", "")), str(after.get("Region", ""))
             country_changed = bool(old_country and new_country and old_country.casefold() != new_country.casefold())
             region_changed = bool(old_region and new_region and old_region.casefold() != new_region.casefold())
-            infrastructure = any(_truthy(item.get(key)) for item in (before, after)
-                                 for key in ("Hosting", "Proxy_VPN_TOR"))
-            device_risk = any(_falsey(item["row"].get("Login.IsCompliantAndManaged")) or
-                              _falsey(item["row"].get("Login.IsCompliant")) or
-                              _falsey(item["row"].get("Login.IsManaged")) for item in (previous, current))
-            travel_candidate = (country_changed and elapsed <= 12) or (region_changed and elapsed <= 3)
-            elevated_candidate = country_changed and elapsed <= 24 and (infrastructure or device_risk)
+            hosting = use_hosting and any(_truthy(item.get("Hosting")) for item in (before, after))
+            proxy = use_proxy and any(_truthy(item.get("Proxy_VPN_TOR")) for item in (before, after))
+            infrastructure = hosting or proxy
+            device_risk = use_device_risk and any(_falsey(item["row"].get("Login.IsCompliantAndManaged")) or
+                                                   _falsey(item["row"].get("Login.IsCompliant")) or
+                                                   _falsey(item["row"].get("Login.IsManaged")) for item in (previous, current))
+            country_candidate = use_country_change and country_changed and elapsed <= country_hours
+            region_candidate = use_region_change and region_changed and elapsed <= region_hours
+            travel_candidate = country_candidate or region_candidate
+            elevated_candidate = use_elevated_window and country_changed and elapsed <= elevated_hours and (infrastructure or device_risk)
             if not (travel_candidate or elevated_candidate):
                 continue
             score, reasons = 0, []
-            if country_changed:
-                score += 4 if elapsed <= 4 else 3 if elapsed <= 12 else 1
+            if country_candidate or elevated_candidate:
+                score += 4 if elapsed <= 4 else 3 if elapsed <= country_hours else 1
                 reasons.append(f"Country changed within {elapsed:.2f}h")
-            elif region_changed:
+            elif region_candidate:
                 score += 2; reasons.append(f"Region changed within {elapsed:.2f}h")
-            if any(_truthy(item.get("Hosting")) for item in (before, after)):
+            if hosting:
                 score += 2; reasons.append("Hosting provider IP")
-            if any(_truthy(item.get("Proxy_VPN_TOR")) for item in (before, after)):
+            if proxy:
                 score += 2; reasons.append("Proxy/VPN/TOR indicator")
             if device_risk:
                 score += 2; reasons.append("Device not compliant and managed")
@@ -832,9 +851,27 @@ def analyze_impossible_travel(rows: List[Dict[str, Any]], enrichment: Dict[str, 
 
 
 def analyze_suspicious_logins(rows: List[Dict[str, Any]], enrichment: Dict[str, Dict[str, Any]],
-                              enriched_ip_columns: List[str]) -> Dict[str, Dict[str, Any]]:
+                              enriched_ip_columns: List[str], options: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
     if not enrichment or not enriched_ip_columns:
         raise ValueError("IP enrichment is required before hunting suspicious logins")
+    if options is not None and not isinstance(options, dict):
+        raise ValueError("Suspicious Login options must be an object")
+    options = options or {}
+    use_country = options.get("useCountry", True) is True
+    trusted_values = options.get("trustedCountries", ["United States"])
+    if isinstance(trusted_values, str):
+        trusted_values = re.split(r"[\n,]+", trusted_values)
+    country_aliases = {"us": "unitedstates", "usa": "unitedstates", "unitedstatesofamerica": "unitedstates"}
+    country_key = lambda value: country_aliases.get(re.sub(r"[^a-z]", "", str(value or "").casefold()), re.sub(r"[^a-z]", "", str(value or "").casefold()))
+    trusted_countries = {country_key(value) for value in trusted_values if str(value).strip()}
+    use_proxy = options.get("useProxy", True) is True
+    use_hosting = options.get("useHosting", True) is True
+    require_device_risk = options.get("requireDeviceRisk", True) is True
+    missing_device_risky = options.get("missingDeviceRisky", True) is True
+    if use_country and not trusted_countries:
+        raise ValueError("Enter at least one trusted country or disable the country rule")
+    if not (use_country or use_proxy or use_hosting):
+        raise ValueError("Select at least one Suspicious Login rule")
     preferred_ip = "ClientIP" if "ClientIP" in enriched_ip_columns else enriched_ip_columns[0]
     findings: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -847,23 +884,26 @@ def analyze_suspicious_logins(rows: List[Dict[str, Any]], enrichment: Dict[str, 
         proxy = _truthy(intel.get("Proxy_VPN_TOR"))
         hosting = _truthy(intel.get("Hosting"))
         country = str(intel.get("Country", "")).strip()
-        united_states = {"united states", "united states of america", "us", "usa", "u.s.", "u.s.a."}
-        outside_united_states = bool(country) and country.casefold() not in united_states
+        outside_trusted_countries = use_country and bool(country) and country_key(country) not in trusted_countries
         compliant = row.get("Login.IsCompliant", "")
         compliant_managed = row.get("Login.IsCompliantAndManaged", "")
-        compliant_bad = str(compliant).strip() == "" or _falsey(compliant)
-        combined_bad = str(compliant_managed).strip() == "" or _falsey(compliant_managed)
-        infrastructure_device_risk = (proxy or hosting) and compliant_bad and combined_bad
-        if not (outside_united_states or infrastructure_device_risk):
+        compliant_bad = (_falsey(compliant) or (missing_device_risky and str(compliant).strip() == ""))
+        combined_bad = (_falsey(compliant_managed) or (missing_device_risky and str(compliant_managed).strip() == ""))
+        device_risk = compliant_bad and combined_bad
+        infrastructure = (use_proxy and proxy) or (use_hosting and hosting)
+        infrastructure_candidate = infrastructure and (device_risk or not require_device_risk)
+        if not (outside_trusted_countries or infrastructure_candidate):
             continue
         score, reasons = 0, []
-        if outside_united_states: score += 4; reasons.append(f"Login country outside United States ({country})")
-        if proxy: score += 3; reasons.append("Proxy/VPN/TOR indicator")
-        if hosting: score += 3; reasons.append("Hosting provider IP")
-        if str(compliant).strip() == "": score += 1; reasons.append("IsCompliant missing")
-        elif _falsey(compliant): score += 2; reasons.append("IsCompliant=False")
-        if str(compliant_managed).strip() == "": score += 1; reasons.append("IsCompliantAndManaged missing")
-        elif _falsey(compliant_managed): score += 2; reasons.append("IsCompliantAndManaged=False")
+        if outside_trusted_countries:
+            score += 4; reasons.append(f"Login country outside trusted countries ({country})")
+        if use_proxy and proxy: score += 3; reasons.append("Proxy/VPN/TOR indicator")
+        if use_hosting and hosting: score += 3; reasons.append("Hosting provider IP")
+        if require_device_risk and infrastructure:
+            if str(compliant).strip() == "": score += 1; reasons.append("IsCompliant missing")
+            elif _falsey(compliant): score += 2; reasons.append("IsCompliant=False")
+            if str(compliant_managed).strip() == "": score += 1; reasons.append("IsCompliantAndManaged missing")
+            elif _falsey(compliant_managed): score += 2; reasons.append("IsCompliantAndManaged=False")
         row_key = str(row.get("_Row", ""))
         findings[row_key] = {
             "Flag": True, "Risk": "High" if score >= 7 else "Medium", "Score": score, "IP": ip,
