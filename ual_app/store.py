@@ -10,7 +10,7 @@ from threading import RLock
 from typing import Any, Dict, List, Optional
 
 from .app_mapping import add_app_name_mapping
-from .core import IP_API_OUTPUT_FIELDS, RDAP_OUTPUT_FIELDS, add_inbox_rule_review, add_login_review, analyze_impossible_travel, analyze_suspicious_logins, build_event_summary, build_message_trace_event_summary, email_domains, extract_message_subject_pairs, format_message_id, hunt_suspicious_message_trace, message_trace_ip_columns, normalize_ip, normalize_message_id_display, parse_message_trace_rows, parse_rows, read_upload, row_columns, summarize, utc_now
+from .core import IP_API_OUTPUT_FIELDS, RDAP_OUTPUT_FIELDS, add_inbox_rule_review, add_login_review, analyze_impossible_travel, analyze_suspicious_logins, build_event_summary, build_message_trace_event_summary, email_domains, extract_message_subject_pairs, format_message_id, hunt_suspicious_message_trace, message_subject_export_rows, message_trace_ip_columns, normalize_ip, normalize_message_id_display, parse_message_trace_rows, parse_rows, read_upload, row_columns, summarize, utc_now
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 
@@ -271,6 +271,11 @@ class CaseStore:
                 finding["Pairs"] = "\n".join(lines)
             return findings
         except (OSError, ValueError, AttributeError): return {}
+
+    def exported_message_subject_pairs(self, case_id: str) -> List[Dict[str, str]]:
+        if not (self._dir(case_id) / "message-subject-analysis.json").is_file():
+            raise ValueError("Run MessageIds + Subjects before exporting")
+        return message_subject_export_rows(self.rows(case_id))
 
     def event_rows(self, case_id: str):
         path = self._dir(case_id) / "event-summary.json"

@@ -24,11 +24,11 @@
 | Area | Capabilities |
 | --- | --- |
 | Case management | Independent local cases with multiple UAL and Message Trace datasets |
-| UAL Review | Parse Purview CSV, Excel, JSON, and JSONL exports; flatten `AuditData`; categorize login, inbox-rule, file, mail, and Teams activity |
+| UAL Review | Parse Purview CSV, Excel, JSON, and JSONL exports; flatten `AuditData`; categorize Logon, Inbox Rules, Transport Rules, Mailbox Permissions, Email Access, File Access, and Other operations |
 | MTL Review | Parse Exchange Message Trace CSV files, including common UTF-16 exports; manage multiple traces per case |
 | Search and review | Field queries, wildcards, `AND`/`OR`, exclusions, empty values, time ranges, unique-value filters, sorting, paging, draggable/frozen columns, and full-value inspection |
-| Investigation workflow | Persistent row tags, bulk tagging of filtered results, message-ID and subject extraction, Microsoft app-ID mapping, and tracker-ready Event narratives |
-| Enrichment | Filter-scoped IP intelligence and domain-registration enrichment with persistent results |
+| Investigation workflow | Persistent row tags, bulk tagging of filtered results, message-ID and subject extraction, a deduplicated two-column MessageIds/Subjects CSV, Microsoft app-ID mapping, and tracker-ready Event narratives |
+| Enrichment | Filter-scoped IP intelligence and domain-registration enrichment with persistent results and in-drawer progress indicators |
 | Hunts | Suspicious logins, impossible travel, newly registered domains, suspicious subjects, and review-worthy third-party mail services |
 | Collection and export | Authorized Microsoft Graph email collection, customizable filtered CSV export, and client-shareable XLSX preparation |
 

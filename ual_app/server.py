@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .app_mapping import UNKNOWN_APP, app_reference
 from .client_xlsx import client_xlsx_bytes
-from .core import compile_query, email_domains, enrich_domains_rdap, enrich_ips_ipapi, ip_columns, matches_event_category, message_trace_ip_columns, normalize_ip, row_columns, summarize_metrics
+from .core import ACTIVITY_CATEGORIES, compile_query, email_domains, enrich_domains_rdap, enrich_ips_ipapi, ip_columns, matches_event_category, message_trace_ip_columns, normalize_ip, row_columns, summarize_metrics
 from .email_collection import collect_emails, csv_targets, manual_targets
 from .store import CaseStore
 
@@ -110,7 +110,7 @@ def facet_counts(query_rows, category_rows, selected_operation=""):
         "all": len(query_rows),
         "categories": {
             category: sum(1 for row in query_rows if matches_event_category(row, category))
-            for category in ("logins", "inbox_rules", "files", "mail", "teams")
+            for category in ACTIVITY_CATEGORIES
         },
         "operationTotal": len(category_rows),
         "operations": top_operations,
@@ -249,6 +249,7 @@ class Handler(BaseHTTPRequestHandler):
                 if parts[3] == "rows": return self.get_rows(case_id, parse_qs(parsed.query))
                 if parts[3] == "column-values": return self.get_column_values(case_id, parse_qs(parsed.query))
                 if parts[3] == "export": return self.export(case_id, parse_qs(parsed.query))
+                if parts[3] == "message-subject-export": return self.export_message_subjects(case_id, parse_qs(parsed.query))
                 if parts[3] == "message-ids": return self.message_ids(case_id, parse_qs(parsed.query))
             return self.static(parsed.path)
         except CLIENT_DISCONNECT_ERRORS: return
@@ -511,6 +512,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "text/csv; charset=utf-8")
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+    def export_message_subjects(self, case_id, params):
+        rows = STORE.exported_message_subject_pairs(case_id)
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=["InternetMessageId", "Subject"])
+        writer.writeheader()
+        writer.writerows(rows)
+        data = output.getvalue().encode("utf-8-sig")
+        meta = STORE.meta(case_id)
+        fallback = meta.get("ualName") or Path(meta.get("sourceFile", "ual")).stem
+        filename = csv_download_name(params.get("filename", [""])[0], f"{fallback}-message-ids-subjects")
+        self.send_response(200); self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-store")
+        self.end_headers(); self.wfile.write(data)
 
     def export_message_trace(self, case_id, trace_id, params):
         overview = STORE.message_trace_overview(case_id, trace_id)

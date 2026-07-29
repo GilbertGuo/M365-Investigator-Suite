@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from ual_app.core import extract_message_subject_pairs, normalize_message_id_display
+from ual_app.core import extract_message_subject_pairs, message_subject_export_rows, normalize_message_id_display
 
 
 class MessageSubjectTests(unittest.TestCase):
@@ -67,6 +67,16 @@ class MessageSubjectTests(unittest.TestCase):
             "InternetMessageIDs": "<first@example.com>; <second@example.com>",
             "Item.InternetMessageId": "<third@example.com>",
         })
+
+    def test_export_rows_deduplicate_ids_and_keep_the_best_subject(self):
+        rows = [
+            {"MessageSubject.Pairs": "<first@example.com> → (no subject)\n<second@example.com> → Second subject"},
+            {"MessageSubject.Pairs": "first@example.com → First subject\n<SECOND@example.com> → Duplicate subject"},
+        ]
+        self.assertEqual(message_subject_export_rows(rows), [
+            {"InternetMessageId": "<first@example.com>", "Subject": "First subject"},
+            {"InternetMessageId": "<second@example.com>", "Subject": "Second subject"},
+        ])
 
 
 if __name__ == "__main__":

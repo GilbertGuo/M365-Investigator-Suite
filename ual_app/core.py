@@ -247,6 +247,27 @@ def extract_message_subject_pairs(row: Dict[str, Any]) -> List[Tuple[str, str]]:
     return pairs
 
 
+def message_subject_export_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    unique: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        for line in str(row.get("MessageSubject.Pairs", "") or "").splitlines():
+            message_id, separator, subject = line.partition(" → ")
+            if not separator:
+                continue
+            message_id = format_message_id(message_id)
+            if not message_id or "@" not in message_id:
+                continue
+            subject = subject.strip()
+            if subject == "(no subject)":
+                subject = ""
+            key = message_id.casefold()
+            if key not in unique:
+                unique[key] = {"InternetMessageId": message_id, "Subject": subject}
+            elif not unique[key]["Subject"] and subject:
+                unique[key]["Subject"] = subject
+    return list(unique.values())
+
+
 def add_inbox_rule_review(row: Dict[str, Any]) -> Dict[str, Any]:
     if "inboxrule" not in str(row.get("Operation", "")).lower():
         return row
@@ -542,6 +563,28 @@ def compile_query(text: str):
     return matches
 
 
+ACTIVITY_CATEGORY_OPERATIONS = {
+    "logon": frozenset({"userloggedin", "userloginfailed"}),
+    "inbox_rules": frozenset({"newinboxrule", "setinboxrule", "updateinboxrule", "updateinboxrules"}),
+    "transport_rules": frozenset({"newtransportrule", "settransportrule", "enabletransportrule", "removetransportrule"}),
+    "mailbox_permissions": frozenset({"addmailboxpermission", "removemailboxpermission"}),
+    "email_access": frozenset({"mailitemsaccessed", "softdelete", "create", "update", "move", "movetodeleteditems", "harddelete", "send", "sendas"}),
+    "file_access": frozenset({
+        "fileaccessed", "fileaccessedextended", "filepreviewed", "filecopied", "filedeleted",
+        "filedownloaded", "filemodified", "filemodifiedextended", "searchqueryperformed",
+        "foldercopied", "foldercreated", "foldermoved", "folderrename", "folderrenamed",
+        "folderrestored", "foldermodified", "folderdeletedfirststagerecyclebin",
+        "folderdeletedsecondstagerecyclebin",
+    }),
+}
+ACTIVITY_CATEGORIES = (*ACTIVITY_CATEGORY_OPERATIONS.keys(), "other")
+_CATEGORIZED_ACTIVITY_OPERATIONS = frozenset().union(*ACTIVITY_CATEGORY_OPERATIONS.values())
+
+
+def _normalized_operation(row: Dict[str, Any]) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(row.get("Operation", "")).casefold())
+
+
 def matches_event_category(row: Dict[str, Any], category: str) -> bool:
     operation = str(row.get("Operation", "")).lower()
     workload = str(row.get("Workload", "")).lower()
@@ -549,6 +592,11 @@ def matches_event_category(row: Dict[str, Any], category: str) -> bool:
     category = (category or "").lower()
     if not category:
         return True
+    normalized_operation = _normalized_operation(row)
+    if category in ACTIVITY_CATEGORY_OPERATIONS:
+        return normalized_operation in ACTIVITY_CATEGORY_OPERATIONS[category]
+    if category == "other":
+        return normalized_operation not in _CATEGORIZED_ACTIVITY_OPERATIONS
     if category == "inbox_rules":
         return "inboxrule" in operation
     if category == "logins":
@@ -725,7 +773,7 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         **metrics,
         "operations": [{"name": k, "count": v} for k, v in operations.most_common(12)],
         "categories": {name: sum(1 for row in rows if matches_event_category(row, name))
-                       for name in ("logins", "inbox_rules", "files", "mail", "teams")},
+                       for name in ACTIVITY_CATEGORIES},
     }
 
 

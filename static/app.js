@@ -22,17 +22,20 @@ const PREFERRED_COLUMNS = [
   'InternetMessageId','InternetMessageIDs'
 ];
 const CATEGORY_COLUMNS = {
-  logins:['_Row','CreationTime','Operation','UserId','UserKey','ClientIP','ActorIpAddress','ResultStatus','LogonError','Login.ResultStatusDetail','Login.SessionId','Login.IsCompliant','Login.IsManaged','Login.IsCompliantAndManaged','Login.DeviceId','Login.DeviceName','Login.OS','Login.BrowserType','Login.TrustType','Login.UserAuthenticationMethod','Login.RequestType','Login.UserAgent','Workload','RecordType'],
+  logon:['_Row','CreationTime','Operation','UserId','UserKey','ClientIP','ActorIpAddress','ResultStatus','LogonError','Login.ResultStatusDetail','Login.SessionId','Login.IsCompliant','Login.IsManaged','Login.IsCompliantAndManaged','Login.DeviceId','Login.DeviceName','Login.OS','Login.BrowserType','Login.TrustType','Login.UserAuthenticationMethod','Login.RequestType','Login.UserAgent','Workload','RecordType'],
   inbox_rules:['_Row','CreationTime','Operation','InboxRule.Name','InboxRule.Details','InboxRule.From','InboxRule.SentTo','InboxRule.SubjectContainsWords','InboxRule.MoveToFolder','InboxRule.ForwardTo','InboxRule.RedirectTo','InboxRule.ForwardAsAttachmentTo','InboxRule.DeleteMessage','InboxRule.MarkAsRead','InboxRule.StopProcessingRules','UserId','ClientIP','ResultStatus'],
-  files:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','SiteUrl','SourceFileName','DestinationFileName','SourceRelativeUrl','DestinationRelativeUrl','ItemName','FolderPathName','UserAgent','ResultStatus'],
-  mail:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','MailboxOwnerUPN','InternetMessageId','InternetMessageIDs','ItemName','FolderPathName','Subject','AffectedItems','Folders','ResultStatus'],
-  teams:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','RecordType','TeamName','TeamGuid','ChannelName','ChannelGuid','CommunicationType','ChatThreadId','MeetingId','ParticipantInfo','ResultStatus']
+  transport_rules:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','Name','Parameters','ResultStatus'],
+  mailbox_permissions:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','MailboxOwnerUPN','Parameters','ResultStatus'],
+  email_access:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','MailboxOwnerUPN','InternetMessageId','InternetMessageIDs','ItemName','FolderPathName','Subject','AffectedItems','Folders','ResultStatus'],
+  file_access:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','SiteUrl','SourceFileName','DestinationFileName','SourceRelativeUrl','DestinationRelativeUrl','ItemName','FolderPathName','UserAgent','ResultStatus'],
+  other:PREFERRED_COLUMNS
 };
 const SUSPICIOUS_LOGIN_COLUMNS=['SuspiciousLogin.Flag','SuspiciousLogin.Risk','SuspiciousLogin.Score','SuspiciousLogin.IP','SuspiciousLogin.Location','SuspiciousLogin.ISP','SuspiciousLogin.Proxy_VPN_TOR','SuspiciousLogin.Hosting','SuspiciousLogin.IsCompliant','SuspiciousLogin.IsCompliantAndManaged','SuspiciousLogin.Reasons'];
 const TRAVEL_COLUMNS=['Travel.Flag','Travel.Risk','Travel.Score','Travel.ElapsedHours','Travel.PreviousTime','Travel.PreviousIP','Travel.PreviousISP','Travel.PreviousLocation','Travel.CurrentISP','Travel.CurrentLocation','Travel.HostingOrVPN','Travel.DeviceRisk','Travel.Reasons'];
 const MESSAGE_SUBJECT_COLUMNS=['MessageSubject.InternetMessageIDs','MessageSubject.Subjects','MessageSubject.Pairs'];
 const IP_ENRICHMENT_SUFFIX_ORDER=['Country','Region','City','ISP','AS','Mobile','Proxy_VPN_TOR','Hosting'];
-const VIEW_DEFS=[['','All activity'],['logins','Login activity'],['inbox_rules','Inbox rules'],['files','File activity'],['mail','Mail activity'],['teams','Teams activity']];
+const VIEW_DEFS=[['','All activity'],['logon','Logon'],['inbox_rules','Inbox rules'],['transport_rules','Transport rules'],['mailbox_permissions','Mailbox permissions'],['email_access','Email access'],['file_access','File access'],['other','Other']];
+const CATEGORY_MIGRATIONS={logins:'logon',files:'file_access',mail:'email_access',teams:'other'};
 const COLUMN_PREFERENCE_VERSION=5;
 const state = {caseId:null,caseMeta:null,ualId:null,ualDatasets:[],ualViews:{},overview:null,page:1,size:50,query:'',operation:'',category:'',sortField:'',sortDirection:'asc',columns:[],frozenColumns:[],currentRows:[],currentTotal:0,currentTagged:0};
 const MESSAGE_TRACE_PREFERRED=['_Row','Received','SenderAddress','RecipientAddress','Subject','Status','MessageId','NetworkMessageId','OriginalClientIP','ClientIP','FromIP','ToIP','Directionality','Size'];
@@ -88,7 +91,7 @@ function chooseDefaults(columns, enrichmentSources=[], preferredNames=PREFERRED_
 }
 function columnPreferenceKey(){ return state.ualId?`ualColumnPreferences:${state.ualId}:${state.category||'all'}`:''; }
 function addSessionIdDefaults(preferred,available){
-  if(state.category&&state.category!=='logins') return preferred;
+  if(state.category&&state.category!=='logon') return preferred;
   const sessionColumns=available.filter(column=>/sessionid/i.test(column));
   const withoutSessions=preferred.filter(column=>!/sessionid/i.test(column));
   const insertAt=Math.min(3,withoutSessions.length);
@@ -96,7 +99,7 @@ function addSessionIdDefaults(preferred,available){
 }
 function isAppIdColumn(column){return !column.startsWith('AppMapping.')&&/(?:app|application)id$/i.test(column);}
 function addLoginAppIdDefaults(preferred,available){
-  if(state.category!=='logins') return preferred;
+  if(state.category!=='logon') return preferred;
   const appIdColumns=available.filter(isAppIdColumn);
   const withoutAppIds=preferred.filter(column=>!isAppIdColumn(column));
   const lastSession=withoutAppIds.reduce((last,column,index)=>/sessionid/i.test(column)?index:last,-1);
@@ -166,6 +169,11 @@ $('#confirmDelete').onclick=async()=>{
 $('#back').onclick=()=>{state.caseId=null;state.ualId=null;state.overview=null;document.body.classList.remove('workspace-active');$('#workspace').classList.add('hidden');$('#home').classList.remove('hidden');loadCases();};
 
 function switchWorkspaceTool(tool){
+  $$('.drawer').forEach(drawer=>drawer.classList.add('hidden'));
+  $('#ipApiKey').value='';
+  $('#messageTraceIpApiKey').value='';
+  if(tool!=='review')setReviewLoading('ual',false);
+  if(tool!=='message-trace')setReviewLoading('mtl',false);
   const review=tool==='review';
   const messageTrace=tool==='message-trace';
   const emailCollection=tool==='email-collection';
@@ -183,11 +191,42 @@ function ualToolIsActive(){return !$('#reviewTab').classList.contains('hidden');
 function mtlToolIsActive(){return !$('#messageTraceTab').classList.contains('hidden');}
 function setReviewLoading(scope,loading,title,detail){
   const element=$(scope==='mtl'?'#messageTraceLoading':'#tableLoading');
+  const active=scope==='mtl'?mtlToolIsActive():ualToolIsActive();
+  const visible=Boolean(loading&&active);
   element.querySelector('b').textContent=title||(scope==='mtl'?'Loading MTL activity…':'Loading activity…');
   const help=element.querySelector('small');if(help)help.textContent=detail||'Applying filters and preparing rows';
-  element.classList.toggle('hidden',!loading);
+  element.classList.toggle('hidden',!visible);
   const busy=!$('#tableLoading').classList.contains('hidden')||!$('#messageTraceLoading').classList.contains('hidden');
   $('#workspace').setAttribute('aria-busy',busy?'true':'false');
+}
+const enrichmentUi={ual:{timer:null,running:false},mtl:{timer:null,running:false},domain:{timer:null,running:false}};
+function enrichmentElements(scope){
+  if(scope==='domain')return {progress:$('#messageTraceWhoisProgress'),status:$('#messageTraceWhoisStatus'),button:$('#messageTraceWhoisButton')};
+  const mtl=scope==='mtl';
+  return {progress:$(mtl?'#messageTraceEnrichProgress':'#enrichProgress'),status:$(mtl?'#messageTraceEnrichStatus':'#enrichStatus'),button:$(mtl?'#messageTraceEnrichButton':'#enrichBtn')};
+}
+function startEnrichmentProgress(scope,label='IP enrichment',initial='Contacting IP-API…'){
+  const ui=enrichmentUi[scope],{progress}=enrichmentElements(scope),detail=progress.querySelector('small');
+  if(ui.timer)clearInterval(ui.timer);
+  ui.running=true;
+  const started=performance.now();
+  progress.classList.remove('hidden');
+  progress.setAttribute('aria-valuetext',`${label} in progress`);
+  detail.textContent=initial;
+  ui.timer=setInterval(()=>{const seconds=Math.max(1,Math.floor((performance.now()-started)/1000));detail.textContent=`${label} running · ${seconds}s elapsed`;},1000);
+}
+function stopEnrichmentProgress(scope){
+  const ui=enrichmentUi[scope],{progress}=enrichmentElements(scope);
+  if(ui.timer)clearInterval(ui.timer);
+  ui.timer=null;ui.running=false;
+  progress.classList.add('hidden');
+  progress.setAttribute('aria-valuetext','Waiting');
+  progress.querySelector('small').textContent=scope==='domain'?'Preparing domain enrichment…':'Preparing enrichment…';
+}
+function resetEnrichmentStatus(scope){
+  if(enrichmentUi[scope].running)return;
+  const {progress,status}=enrichmentElements(scope);
+  progress.classList.add('hidden');status.className='status';status.textContent='';
 }
 $('#reviewNav').onclick=()=>switchWorkspaceTool('review');
 $('#messageTraceNav').onclick=()=>{switchWorkspaceTool('message-trace');loadMessageTraceOverview();};
@@ -264,7 +303,7 @@ async function selectUalDataset(datasetId){
   try{overview=await api(`/api/cases/${encodeURIComponent(datasetId)}`);}catch(error){setReviewLoading('ual',false);throw error;}
   const saved=state.ualViews[datasetId];
   state.ualId=datasetId;state.overview=overview;
-  state.page=saved?.page||1;state.size=saved?.size||50;state.query=saved?.query||'';state.operation=saved?.operation||'';state.category=saved?.category||'';state.sortField=saved?.sortField||'';state.sortDirection=saved?.sortDirection||'asc';
+  state.page=saved?.page||1;state.size=saved?.size||50;state.query=saved?.query||'';state.operation=saved?.operation||'';state.category=CATEGORY_MIGRATIONS[saved?.category]||saved?.category||'';state.sortField=saved?.sortField||'';state.sortDirection=saved?.sortDirection||'asc';
   state.columns=(saved?.columns||restoreColumnPreferences(overview)).filter(column=>overview.columns.includes(column));
   state.frozenColumns=(saved?.frozenColumns||state.frozenColumns||[]).filter(column=>state.columns.includes(column));
   state.columns=orderColumnsWithFrozen(state.columns,state.frozenColumns);
@@ -461,19 +500,19 @@ function setIpApiMode(scope){
 $('#ipApiMode').onchange=()=>setIpApiMode('ual');
 $('#messageTraceIpApiMode').onchange=()=>setIpApiMode('mtl');
 setIpApiMode('ual');setIpApiMode('mtl');
-$('#messageTraceEnrich').onclick=()=>{$$('.drawer').forEach(drawer=>drawer.classList.add('hidden'));$('#messageTraceIpApiKey').value='';setIpApiMode('mtl');$('#messageTraceEnrichDrawer').classList.remove('hidden');};
-$('#closeMessageTraceEnrich').onclick=()=>{$('#messageTraceIpApiKey').value='';$('#messageTraceEnrichDrawer').classList.add('hidden');};
+$('#messageTraceEnrich').onclick=()=>{$$('.drawer').forEach(drawer=>drawer.classList.add('hidden'));$('#messageTraceIpApiKey').value='';resetEnrichmentStatus('mtl');setIpApiMode('mtl');$('#messageTraceEnrichDrawer').classList.remove('hidden');};
+$('#closeMessageTraceEnrich').onclick=()=>{$('#messageTraceIpApiKey').value='';$('#messageTraceEnrichDrawer').classList.add('hidden');resetEnrichmentStatus('mtl');};
 $('#messageTraceEnrichButton').onclick=async()=>{
-  const status=$('#messageTraceEnrichStatus'),button=$('#messageTraceEnrichButton');status.className='status';status.textContent='Enriching IPs in filtered Message Trace rows…';button.disabled=true;
+  const status=$('#messageTraceEnrichStatus'),button=$('#messageTraceEnrichButton');status.className='status';status.textContent='Calling IP-API and adding enrichment columns…';button.disabled=true;startEnrichmentProgress('mtl');
   try{
     const commercial=$('#messageTraceIpApiMode').value==='commercial',apiKey=commercial?$('#messageTraceIpApiKey').value.trim():'';
     if(commercial&&!apiKey)throw new Error('Enter a commercial IP-API key');
     const params=new URLSearchParams({q:messageTraceState.query});
     const data=await api(`/api/cases/${state.caseId}/message-traces/${encodeURIComponent(messageTraceState.traceId)}/enrich?${params}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({column:$('#messageTraceIpColumn').value,acceptNonCommercialTerms:!commercial,apiKey})});
     messageTraceState.overview.columns=data.columns;messageTraceState.overview.enrichmentColumns=data.enrichedColumns;
-    messageTraceState.columns=messageTraceDefaultColumns(data.columns,data.enrichedColumns);$('#messageTraceEnrichDrawer').classList.add('hidden');await loadMessageTraceRows();toast(`${data.found.toLocaleString()} Message Trace IP${data.found===1?'':'s'} processed`);
+    messageTraceState.columns=messageTraceDefaultColumns(data.columns,data.enrichedColumns);await loadMessageTraceRows();status.textContent='';$('#messageTraceEnrichDrawer').classList.add('hidden');toast(`${data.found.toLocaleString()} Message Trace IP${data.found===1?'':'s'} processed`);
   }catch(error){status.className='status error';status.textContent=error.message;}
-  finally{$('#messageTraceIpApiKey').value='';button.disabled=false;}
+  finally{stopEnrichmentProgress('mtl');$('#messageTraceIpApiKey').value='';button.disabled=false;}
 };
 function messageTraceDomain(value){return String(value||'').match(/@([a-z0-9.-]+\.[a-z]{2,63})/i)?.[1]?.replace(/\.+$/,'').toLowerCase()||'';}
 function messageTraceCellFromElement(cell){
@@ -504,18 +543,18 @@ function bindMessageTraceInteractions(){
     });
   });
 }
-$('#messageTraceWhois').onclick=()=>{$$('.drawer').forEach(drawer=>drawer.classList.add('hidden'));$('#messageTraceWhoisStatus').textContent='';$('#messageTraceWhoisDrawer').classList.remove('hidden');};
-$('#closeMessageTraceWhois').onclick=()=>$('#messageTraceWhoisDrawer').classList.add('hidden');
+$('#messageTraceWhois').onclick=()=>{$$('.drawer').forEach(drawer=>drawer.classList.add('hidden'));resetEnrichmentStatus('domain');$('#messageTraceWhoisDrawer').classList.remove('hidden');};
+$('#closeMessageTraceWhois').onclick=()=>{$('#messageTraceWhoisDrawer').classList.add('hidden');resetEnrichmentStatus('domain');};
 $('#messageTraceWhoisButton').onclick=async()=>{
-  const status=$('#messageTraceWhoisStatus'),button=$('#messageTraceWhoisButton');status.className='status';status.textContent='Looking up domains from filtered Message Trace rows…';button.disabled=true;
+  const status=$('#messageTraceWhoisStatus'),button=$('#messageTraceWhoisButton');status.className='status';status.textContent='Looking up domains from filtered Message Trace rows…';button.disabled=true;startEnrichmentProgress('domain','Domain enrichment','Contacting RDAP services…');
   try{
     const params=new URLSearchParams({q:messageTraceState.query});
     const data=await api(`/api/cases/${state.caseId}/message-traces/${encodeURIComponent(messageTraceState.traceId)}/enrich-domains?${params}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({column:$('#messageTraceWhoisColumn').value})});
     messageTraceState.overview.columns=data.columns;messageTraceState.overview.domainEnrichmentColumns=data.enrichedColumns;
     messageTraceState.columns=messageTraceDefaultColumns(data.columns,messageTraceState.overview.enrichmentColumns||[]);saveMessageTraceView();
-    $('#messageTraceWhoisDrawer').classList.add('hidden');await loadMessageTraceRows();toast(`${data.found.toLocaleString()} email domain${data.found===1?'':'s'} processed`);
+    await loadMessageTraceRows();status.textContent='';$('#messageTraceWhoisDrawer').classList.add('hidden');toast(`${data.found.toLocaleString()} email domain${data.found===1?'':'s'} processed`);
   }catch(error){status.className='status error';status.textContent=error.message;}
-  finally{button.disabled=false;}
+  finally{stopEnrichmentProgress('domain');button.disabled=false;}
 };
 function updateMessageTraceHuntControls(){
   const enabled=$('#messageTraceUseDomainAge').checked;
@@ -613,12 +652,7 @@ function renderFacetControls(facets=null) {
   $('#ops').innerHTML=`<button class="chip ${state.operation===''?'active':''}" data-op="">All operations <b>${operationTotal}</b></button>`+operations.map(x=>`<button class="chip ${state.operation===x.name?'active':''}" data-op="${esc(x.name)}">${esc(x.name)} <b>${x.count}</b></button>`).join('');
   $$('.chip').forEach(button=>button.onclick=()=>{
     state.operation=button.dataset.op; state.page=1;
-    const operationName=state.operation.toLowerCase();
-    const loginOperation=['login','logon','loggedin','loggedout'].some(marker=>operationName.includes(marker));
-    const targetCategory=state.operation ? (operationName.includes('inboxrule')?'inbox_rules':loginOperation?'logins':'') : state.category;
-    if(state.category!==targetCategory) {
-      state.category=targetCategory; state.columns=restoreColumnPreferences(state.overview); renderFacetControls(facets); renderPicker();
-    } else $$('.chip').forEach(item=>item.classList.toggle('active',item===button));
+    $$('.chip').forEach(item=>item.classList.toggle('active',item===button));
     loadRows();
   });
 }
@@ -1070,7 +1104,7 @@ $('#suspiciousLoginHuntButton').onclick=async()=>{
   const trustedCountries=$('#loginTrustedCountries').value.split(/[\n,]+/).map(value=>value.trim()).filter(Boolean);
   try {
     const data=await api(`/api/cases/${activeUalId()}/hunt-suspicious-logins`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({useCountry:$('#loginUseCountry').checked,trustedCountries,useProxy:$('#loginUseProxy').checked,useHosting:$('#loginUseHosting').checked,requireDeviceRisk:$('#loginRequireDeviceRisk').checked,missingDeviceRisky:$('#loginMissingDeviceRisky').checked})});
-    state.overview.columns=data.columns;state.category='logins';state.operation='';state.page=1;state.query='SuspiciousLogin.Flag:=True';$('#query').value=state.query;
+    state.overview.columns=data.columns;state.category='logon';state.operation='';state.page=1;state.query='SuspiciousLogin.Flag:=True';$('#query').value=state.query;
     state.columns=addContextColumns(restoreColumnPreferences(state.overview),SUSPICIOUS_LOGIN_COLUMNS,data.columns);
     $('#suspiciousLoginDrawer').classList.add('hidden');renderOverview();renderPicker();await loadRows();
     toast(data.findingCount?`${data.findingCount} suspicious login${data.findingCount===1?'':'s'} found`:'No suspicious logins found');
@@ -1090,7 +1124,7 @@ $('#travelHuntButton').onclick=async()=>{
   const button=$('#travelHuntButton'),status=$('#travelHuntStatus');button.disabled=true;status.className='status';status.textContent='Analyzing login travel…';
   try {
     const data=await api(`/api/cases/${activeUalId()}/hunt-travel`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({useCountryChange:$('#travelUseCountryChange').checked,countryHours:Number($('#travelCountryHours').value||12),useRegionChange:$('#travelUseRegionChange').checked,regionHours:Number($('#travelRegionHours').value||3),useElevatedWindow:$('#travelUseElevatedWindow').checked,elevatedHours:Number($('#travelElevatedHours').value||24),useHosting:$('#travelUseHosting').checked,useProxy:$('#travelUseProxy').checked,useDeviceRisk:$('#travelUseDeviceRisk').checked})});
-    state.overview.columns=data.columns;state.category='logins';state.operation='';state.page=1;state.query='Travel.Flag:=True';$('#query').value=state.query;
+    state.overview.columns=data.columns;state.category='logon';state.operation='';state.page=1;state.query='Travel.Flag:=True';$('#query').value=state.query;
     state.columns=addContextColumns(restoreColumnPreferences(state.overview),TRAVEL_COLUMNS,data.columns);
     $('#travelHuntDrawer').classList.add('hidden');renderOverview();renderPicker();await loadRows();
     toast(data.findingCount?`${data.findingCount} impossible-travel candidate${data.findingCount===1?'':'s'} found`:'No impossible-travel candidates found');
@@ -1115,6 +1149,23 @@ $('#messageSubjectAction').onclick=async()=>{
     toast(`${data.pairCount.toLocaleString()} message/subject association${data.pairCount===1?'':'s'} found in ${data.rowCount.toLocaleString()} row${data.rowCount===1?'':'s'}`);
   } catch(error) {toast(error.message);}
   finally {button.disabled=false;button.textContent=original;}
+};
+$('#messageSubjectExport').onclick=async()=>{
+  const button=$('#messageSubjectExport'),original=button.textContent;button.disabled=true;button.textContent='Preparing CSV…';
+  try{
+    const response=await fetch(`/api/cases/${activeUalId()}/message-subject-export`);
+    if(!response.ok){
+      let message='Run MessageIds + Subjects before exporting';
+      try{message=(await response.json()).error||message;}catch{}
+      throw new Error(message);
+    }
+    const blob=await response.blob(),disposition=response.headers.get('Content-Disposition')||'';
+    const filename=disposition.match(/filename="([^"]+)"/i)?.[1]||'message-ids-subjects.csv';
+    const url=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast(`Downloaded ${filename}`);
+  }catch(error){toast(error.message);}
+  finally{button.disabled=false;button.textContent=original;}
 };
 $('#appMapAction').onclick=async()=>{
   const button=$('#appMapAction'), original=button.textContent; button.disabled=true; button.textContent='Mapping…';
@@ -1141,10 +1192,10 @@ $('#eventAction').onclick=async()=>{
   } catch(error) {toast(error.message);}
   finally {button.disabled=false;button.textContent=original;}
 };
-$('#enrichAction').onclick=()=>{closeUniqueValues();$('#valueDrawer').classList.add('hidden');$('#columnPicker').classList.add('hidden');$('#ipApiKey').value='';setIpApiMode('ual');$('#enrichDrawer').classList.remove('hidden');};
-$('#closeEnrich').onclick=()=>{$('#ipApiKey').value='';$('#enrichDrawer').classList.add('hidden');};
+$('#enrichAction').onclick=()=>{closeUniqueValues();$$('.drawer').forEach(drawer=>drawer.classList.add('hidden'));$('#ipApiKey').value='';resetEnrichmentStatus('ual');setIpApiMode('ual');$('#enrichDrawer').classList.remove('hidden');};
+$('#closeEnrich').onclick=()=>{$('#ipApiKey').value='';$('#enrichDrawer').classList.add('hidden');resetEnrichmentStatus('ual');};
 $('#enrichBtn').onclick=async()=>{
-  const status=$('#enrichStatus'); status.className='status'; status.textContent='Calling IP-API and adding enrichment columns…'; $('#enrichBtn').disabled=true;
+  const status=$('#enrichStatus'); status.className='status'; status.textContent='Calling IP-API and adding enrichment columns…'; $('#enrichBtn').disabled=true;startEnrichmentProgress('ual');
   try {
     const commercial=$('#ipApiMode').value==='commercial',apiKey=commercial?$('#ipApiKey').value.trim():'';
     if(commercial&&!apiKey)throw new Error('Enter a commercial IP-API key');
@@ -1154,10 +1205,10 @@ $('#enrichBtn').onclick=async()=>{
     state.overview.enrichmentColumns=data.enrichedColumns;
     const newColumns=orderEnrichmentColumns(data.columns.filter(c=>data.enrichedColumns.some(ipCol=>c.startsWith(`${ipCol}_IPAPI_`))),data.enrichedColumns);
     state.columns=orderEnrichmentColumns([...state.columns,...newColumns.filter(c=>!state.columns.includes(c))].slice(0,50),data.enrichedColumns);
-    saveColumnPreferences(); renderPicker(); await loadRows(); $('#enrichDrawer').classList.add('hidden');
+    saveColumnPreferences(); renderPicker(); await loadRows(); status.textContent='';$('#enrichDrawer').classList.add('hidden');
     toast(`${data.found} unique IPs from the filtered rows processed; enrichment columns added`);
   } catch(error) { status.className='status error'; status.textContent=error.message; }
-  finally { $('#ipApiKey').value='';$('#enrichBtn').disabled=false; }
+  finally { stopEnrichmentProgress('ual');$('#ipApiKey').value='';$('#enrichBtn').disabled=false; }
 };
 
 function setSidebarCollapsed(collapsed, persist=true) {
