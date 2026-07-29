@@ -1,5 +1,20 @@
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
+const THEME_KEY='m365InvestigatorTheme';
+function preferredTheme(){
+  const saved=localStorage.getItem(THEME_KEY);
+  if(saved==='light'||saved==='dark')return saved;
+  return window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';
+}
+function applyTheme(theme,persist=true){
+  const dark=theme==='dark',button=$('#themeToggle'),meta=$('meta[name="theme-color"]');
+  document.documentElement.dataset.theme=dark?'dark':'light';
+  if(button){button.textContent=dark?'Light mode':'Dark mode';button.setAttribute('aria-pressed',dark?'true':'false');button.setAttribute('aria-label',dark?'Switch to light mode':'Switch to dark mode');}
+  if(meta)meta.setAttribute('content',dark?'#171218':'#5b167a');
+  if(persist)localStorage.setItem(THEME_KEY,dark?'dark':'light');
+}
+applyTheme(preferredTheme(),false);
+$('#themeToggle').onclick=()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark');
 const PREFERRED_COLUMNS = [
   '_Row','CreationTime','Operation','Login.SessionId','UserId','UserKey','UserType','ClientIP','ClientIPAddress',
   'Workload','RecordType','ResultStatus','ObjectId','ItemName','FolderPathName','MailboxOwnerUPN',

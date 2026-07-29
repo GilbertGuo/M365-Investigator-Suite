@@ -44,6 +44,20 @@ All screenshots use synthetic identities and reserved documentation IP ranges.
 
 ![MTL Review](docs/screenshots/mtl-review.png)
 
+### Configurable hunts
+
+#### Suspicious Login
+
+![Configurable suspicious-login hunt](docs/screenshots/hunt-suspicious-logins.png)
+
+#### Impossible Travel
+
+![Configurable impossible-travel hunt](docs/screenshots/hunt-impossible-travel.png)
+
+#### Suspicious Mail
+
+![Configurable suspicious-mail hunt](docs/screenshots/hunt-suspicious-mail.png)
+
 ## Quick start
 
 Requirements: Python 3.9 or newer, including Python 3.13, and a modern browser.
