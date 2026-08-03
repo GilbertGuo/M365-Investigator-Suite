@@ -26,17 +26,17 @@ const CATEGORY_COLUMNS = {
   inbox_rules:['_Row','CreationTime','Operation','InboxRule.Name','InboxRule.Details','InboxRule.From','InboxRule.SentTo','InboxRule.SubjectContainsWords','InboxRule.MoveToFolder','InboxRule.ForwardTo','InboxRule.RedirectTo','InboxRule.ForwardAsAttachmentTo','InboxRule.DeleteMessage','InboxRule.MarkAsRead','InboxRule.StopProcessingRules','UserId','ClientIP','ResultStatus'],
   transport_rules:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','Name','Parameters','ResultStatus'],
   mailbox_permissions:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','MailboxOwnerUPN','Parameters','ResultStatus'],
-  email_access:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','MailboxOwnerUPN','InternetMessageId','InternetMessageIDs','ItemName','FolderPathName','Subject','AffectedItems','Folders','ResultStatus'],
+  email_access:['_Row','CreationTime','Operation','UserId','ClientIP','ClientIPAddress','MailboxOwnerUPN','Mail.ActorInfoString','Mail.UserAgent','Mail.ClientInfoString','UserAgent','SessionId','InternetMessageId','InternetMessageIDs','ItemName','FolderPathName','Subject','AffectedItems','Folders','Workload','ResultStatus'],
   file_access:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','SiteUrl','SourceFileName','DestinationFileName','SourceRelativeUrl','DestinationRelativeUrl','ItemName','FolderPathName','UserAgent','ResultStatus'],
   other:PREFERRED_COLUMNS
 };
 const SUSPICIOUS_LOGIN_COLUMNS=['SuspiciousLogin.Flag','SuspiciousLogin.Risk','SuspiciousLogin.Score','SuspiciousLogin.IP','SuspiciousLogin.Location','SuspiciousLogin.ISP','SuspiciousLogin.Proxy_VPN_TOR','SuspiciousLogin.Hosting','SuspiciousLogin.IsCompliant','SuspiciousLogin.IsCompliantAndManaged','SuspiciousLogin.Reasons'];
 const TRAVEL_COLUMNS=['Travel.Flag','Travel.Risk','Travel.Score','Travel.ElapsedHours','Travel.PreviousTime','Travel.PreviousIP','Travel.PreviousISP','Travel.PreviousLocation','Travel.CurrentISP','Travel.CurrentLocation','Travel.HostingOrVPN','Travel.DeviceRisk','Travel.Reasons'];
-const MESSAGE_SUBJECT_COLUMNS=['MessageSubject.InternetMessageIDs','MessageSubject.Subjects','MessageSubject.Pairs'];
+const MESSAGE_SUBJECT_COLUMNS=['MessageSubject.InternetMessageIDs','MessageSubject.Subjects','MessageSubject.SizeInBytes','MessageSubject.Pairs'];
 const IP_ENRICHMENT_SUFFIX_ORDER=['Country','Region','City','ISP','AS','Mobile','Proxy_VPN_TOR','Hosting'];
 const VIEW_DEFS=[['','All activity'],['logon','Logon'],['inbox_rules','Inbox rules'],['transport_rules','Transport rules'],['mailbox_permissions','Mailbox permissions'],['email_access','Email access'],['file_access','File access'],['other','Other']];
 const CATEGORY_MIGRATIONS={logins:'logon',files:'file_access',mail:'email_access',teams:'other'};
-const COLUMN_PREFERENCE_VERSION=5;
+const COLUMN_PREFERENCE_VERSION=6;
 const state = {caseId:null,caseMeta:null,ualId:null,ualDatasets:[],ualViews:{},overview:null,page:1,size:50,query:'',operation:'',category:'',sortField:'',sortDirection:'asc',columns:[],frozenColumns:[],currentRows:[],currentTotal:0,currentTagged:0};
 const MESSAGE_TRACE_PREFERRED=['_Row','Received','SenderAddress','RecipientAddress','Subject','Status','MessageId','NetworkMessageId','OriginalClientIP','ClientIP','FromIP','ToIP','Directionality','Size'];
 const WHOIS_SUFFIX_ORDER=['Domain','RegisteredDomain','Registrar','RegistrationDate','ExpirationDate','LastChangedDate','Status','NameServers','DNSSEC','Lookup_Status','Error'];
@@ -1160,10 +1160,30 @@ $('#messageSubjectAction').onclick=async()=>{
   } catch(error) {toast(error.message);}
   finally {button.disabled=false;button.textContent=original;}
 };
-$('#messageSubjectExport').onclick=async()=>{
+function closeMessageSubjectExportModal(){$('#messageSubjectExportModal').classList.add('hidden');}
+function openMessageSubjectExportModal(){
+  const base=safeExportBase(state.overview?.meta?.name,'ual-export');
+  $('#messageSubjectExportFilename').value=`${base}-message-ids-subjects`;
+  $('#messageSubjectExportSize').checked=false;
+  $('#messageSubjectExportModal').classList.remove('hidden');
+  requestAnimationFrame(()=>{$('#messageSubjectExportFilename').focus();$('#messageSubjectExportFilename').select();});
+}
+$('#messageSubjectExport').onclick=openMessageSubjectExportModal;
+$('#cancelMessageSubjectExport').onclick=closeMessageSubjectExportModal;
+$('#messageSubjectExportModal').onclick=event=>{if(event.target===$('#messageSubjectExportModal'))closeMessageSubjectExportModal();};
+$('#messageSubjectExportForm').onsubmit=async event=>{
+  event.preventDefault();
+  const requestedFilename=$('#messageSubjectExportFilename').value.trim();
+  if(!requestedFilename)return;
+  const includeSize=$('#messageSubjectExportSize').checked;
+  closeMessageSubjectExportModal();
   const button=$('#messageSubjectExport'),original=button.textContent;button.disabled=true;button.textContent='Preparing CSV…';
   try{
-    const exportUrl=()=>`/api/cases/${activeUalId()}/message-subject-export?${currentUalFilterParams()}`;
+    const exportUrl=()=>{
+      const params=currentUalFilterParams();params.set('filename',requestedFilename);
+      if(includeSize)params.set('includeSize','true');
+      return `/api/cases/${activeUalId()}/message-subject-export?${params}`;
+    };
     let response=await fetch(exportUrl());
     if(!response.ok){
       let message='Run MessageIds + Subjects before exporting';
@@ -1180,10 +1200,10 @@ $('#messageSubjectExport').onclick=async()=>{
       }
     }
     const blob=await response.blob(),disposition=response.headers.get('Content-Disposition')||'';
-    const filename=disposition.match(/filename="([^"]+)"/i)?.[1]||'message-ids-subjects.csv';
+    const downloadedFilename=disposition.match(/filename="([^"]+)"/i)?.[1]||'message-ids-subjects.csv';
     const url=URL.createObjectURL(blob),link=document.createElement('a');
-    link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
-    toast(`Downloaded ${filename}`);
+    link.href=url;link.download=downloadedFilename;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast(`Downloaded ${downloadedFilename}`);
   }catch(error){toast(error.message);}
   finally{button.disabled=false;button.textContent=original;}
 };

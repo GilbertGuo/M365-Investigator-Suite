@@ -514,9 +514,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
 
     def export_message_subjects(self, case_id, params):
-        rows = STORE.exported_message_subject_pairs(case_id, self.filtered(case_id, params))
+        include_size = params.get("includeSize", [""])[0].casefold() in {"1", "true", "yes"}
+        rows = STORE.exported_message_subject_pairs(case_id, self.filtered(case_id, params), include_size)
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=["InternetMessageId", "Subject"])
+        fields = ["InternetMessageId", "Subject"] + (["SizeInBytes"] if include_size else [])
+        writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
         data = output.getvalue().encode("utf-8-sig")

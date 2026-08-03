@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ual_app.core import extract_message_subject_pairs, message_subject_export_rows, normalize_message_id_display
+from ual_app.core import extract_message_subject_details, extract_message_subject_pairs, message_subject_export_rows, normalize_message_id_display
 from ual_app.store import CaseStore
 
 
@@ -12,7 +12,7 @@ class MessageSubjectTests(unittest.TestCase):
         row = {
             "Folders": json.dumps([{"FolderItems": [
                 {"InternetMessageId": "<first@example.com>", "Subject": "First subject"},
-                {"InternetMessageId": "<second@example.com>", "Subject": "Second subject"},
+                {"InternetMessageId": "<second@example.com>", "Subject": "Second subject", "SizeInBytes": 2048},
             ]}]),
             "InternetMessageIDs": "first@example.com; second@example.com",
         }
@@ -20,10 +20,15 @@ class MessageSubjectTests(unittest.TestCase):
             ("<first@example.com>", "First subject"),
             ("<second@example.com>", "Second subject"),
         ])
+        self.assertEqual(extract_message_subject_details(row), [
+            ("<first@example.com>", "First subject", ""),
+            ("<second@example.com>", "Second subject", "2048"),
+        ])
 
     def test_pairs_flattened_item_fields(self):
-        row = {"Item.InternetMessageId": "<flat@example.com>", "Item.Subject": "Flat subject"}
+        row = {"Item.InternetMessageId": "<flat@example.com>", "Item.Subject": "Flat subject", "Item.SizeInBytes": 4096}
         self.assertEqual(extract_message_subject_pairs(row), [("<flat@example.com>", "Flat subject")])
+        self.assertEqual(extract_message_subject_details(row), [("<flat@example.com>", "Flat subject", "4096")])
 
     def test_pairs_item_and_item1_python_literal_columns(self):
         row = {
@@ -73,12 +78,16 @@ class MessageSubjectTests(unittest.TestCase):
 
     def test_export_rows_deduplicate_ids_and_keep_the_best_subject(self):
         rows = [
-            {"MessageSubject.Pairs": "<first@example.com> → (no subject)\n<second@example.com> → Second subject"},
-            {"MessageSubject.Pairs": "first@example.com → First subject\n<SECOND@example.com> → Duplicate subject"},
+            {"MessageSubject.Pairs": "<first@example.com> → (no subject)\n<second@example.com> → Second subject", "MessageSubject.SizeInBytes": "(not recorded); 2048"},
+            {"MessageSubject.Pairs": "first@example.com → First subject\n<SECOND@example.com> → Duplicate subject", "MessageSubject.SizeInBytes": "1024; (not recorded)"},
         ]
         self.assertEqual(message_subject_export_rows(rows), [
             {"InternetMessageId": "<first@example.com>", "Subject": "First subject"},
             {"InternetMessageId": "<second@example.com>", "Subject": "Second subject"},
+        ])
+        self.assertEqual(message_subject_export_rows(rows, include_size=True), [
+            {"InternetMessageId": "<first@example.com>", "Subject": "First subject", "SizeInBytes": "1024"},
+            {"InternetMessageId": "<second@example.com>", "Subject": "Second subject", "SizeInBytes": "2048"},
         ])
 
     def test_store_export_uses_only_the_supplied_filtered_rows(self):
@@ -90,14 +99,18 @@ class MessageSubjectTests(unittest.TestCase):
             (case_dir / "meta.json").write_text(json.dumps({"id": case_id, "name": "Synthetic"}), encoding="utf-8")
             source_rows = [
                 {"_Row": 1, "Raw": "{'InternetMessageId': '<first@example.com>', 'Subject': 'First subject'}"},
-                {"_Row": 2, "Raw": "{'InternetMessageId': '<second@example.com>', 'Subject': 'Second subject'}"},
+                {"_Row": 2, "Raw": "{'InternetMessageId': '<second@example.com>', 'Subject': 'Second subject', 'SizeInBytes': 8192}"},
             ]
             (case_dir / "rows.jsonl").write_text("".join(json.dumps(row) + "\n" for row in source_rows), encoding="utf-8")
             store = CaseStore(root)
+            (case_dir / "message-subject-analysis.json").write_text(json.dumps({"findings": {}}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "before exporting SizeInBytes"):
+                store.exported_message_subject_pairs(case_id, [], include_size=True)
             store.extract_message_subjects(case_id)
             filtered_rows = [row for row in store.rows(case_id) if row["_Row"] == 2]
-            self.assertEqual(store.exported_message_subject_pairs(case_id, filtered_rows), [
-                {"InternetMessageId": "<second@example.com>", "Subject": "Second subject"},
+            self.assertEqual(filtered_rows[0]["MessageSubject.SizeInBytes"], "8192")
+            self.assertEqual(store.exported_message_subject_pairs(case_id, filtered_rows, include_size=True), [
+                {"InternetMessageId": "<second@example.com>", "Subject": "Second subject", "SizeInBytes": "8192"},
             ])
 
 

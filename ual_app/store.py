@@ -10,7 +10,7 @@ from threading import RLock
 from typing import Any, Dict, List, Optional
 
 from .app_mapping import add_app_name_mapping
-from .core import IP_API_OUTPUT_FIELDS, RDAP_OUTPUT_FIELDS, add_inbox_rule_review, add_login_review, analyze_impossible_travel, analyze_suspicious_logins, build_event_summary, build_message_trace_event_summary, email_domains, extract_message_subject_pairs, format_message_id, hunt_suspicious_message_trace, message_subject_export_rows, message_trace_ip_columns, normalize_ip, normalize_message_id_display, parse_message_trace_rows, parse_rows, read_upload, row_columns, summarize, utc_now
+from .core import IP_API_OUTPUT_FIELDS, RDAP_OUTPUT_FIELDS, add_inbox_rule_review, add_login_review, add_mail_review, analyze_impossible_travel, analyze_suspicious_logins, build_event_summary, build_message_trace_event_summary, email_domains, extract_message_subject_details, format_message_id, hunt_suspicious_message_trace, message_subject_export_rows, message_trace_ip_columns, normalize_ip, normalize_message_id_display, parse_message_trace_rows, parse_rows, read_upload, row_columns, summarize, utc_now
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 
@@ -199,7 +199,7 @@ class CaseStore:
 
     def base_rows(self, case_id: str) -> List[Dict[str, Any]]:
         with (self._dir(case_id) / "rows.jsonl").open(encoding="utf-8") as handle:
-            return [add_app_name_mapping(normalize_message_id_display(add_login_review(add_inbox_rule_review(json.loads(line))))) for line in handle if line.strip()]
+            return [add_app_name_mapping(normalize_message_id_display(add_mail_review(add_login_review(add_inbox_rule_review(json.loads(line)))))) for line in handle if line.strip()]
 
     def enrichment_columns(self, case_id: str) -> List[str]:
         path = self._dir(case_id) / "enrichment-columns.json"
@@ -272,10 +272,19 @@ class CaseStore:
             return findings
         except (OSError, ValueError, AttributeError): return {}
 
-    def exported_message_subject_pairs(self, case_id: str, rows: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, str]]:
-        if not (self._dir(case_id) / "message-subject-analysis.json").is_file():
+    def exported_message_subject_pairs(self, case_id: str, rows: Optional[List[Dict[str, Any]]] = None,
+                                       include_size: bool = False) -> List[Dict[str, str]]:
+        analysis_path = self._dir(case_id) / "message-subject-analysis.json"
+        if not analysis_path.is_file():
             raise ValueError("Run MessageIds + Subjects before exporting")
-        return message_subject_export_rows(self.rows(case_id) if rows is None else rows)
+        if include_size:
+            try:
+                analysis_version = int(json.loads(analysis_path.read_text(encoding="utf-8")).get("version", 1))
+            except (OSError, ValueError, TypeError, AttributeError):
+                analysis_version = 1
+            if analysis_version < 2:
+                raise ValueError("Run MessageIds + Subjects before exporting SizeInBytes")
+        return message_subject_export_rows(self.rows(case_id) if rows is None else rows, include_size)
 
     def event_rows(self, case_id: str):
         path = self._dir(case_id) / "event-summary.json"
@@ -639,16 +648,17 @@ class CaseStore:
     def extract_message_subjects(self, case_id: str) -> Dict[str, Any]:
         findings, unique_pairs = {}, set()
         for row in self.base_rows(case_id):
-            pairs = extract_message_subject_pairs(row)
-            if not pairs:
+            details = extract_message_subject_details(row)
+            if not details:
                 continue
-            unique_pairs.update(pairs)
+            unique_pairs.update((message_id, subject) for message_id, subject, _ in details)
             findings[str(row.get("_Row", ""))] = {
-                "InternetMessageIDs": "; ".join(message_id for message_id, _ in pairs),
-                "Subjects": "; ".join(subject or "(no subject)" for _, subject in pairs),
-                "Pairs": "\n".join(f"{message_id} → {subject or '(no subject)'}" for message_id, subject in pairs),
+                "InternetMessageIDs": "; ".join(message_id for message_id, _, _ in details),
+                "Subjects": "; ".join(subject or "(no subject)" for _, subject, _ in details),
+                "SizeInBytes": "; ".join(size or "(not recorded)" for _, _, size in details),
+                "Pairs": "\n".join(f"{message_id} → {subject or '(no subject)'}" for message_id, subject, _ in details),
             }
-        payload = {"analyzedAt": utc_now(), "pairCount": len(unique_pairs), "rowCount": len(findings), "findings": findings}
+        payload = {"version": 2, "analyzedAt": utc_now(), "pairCount": len(unique_pairs), "rowCount": len(findings), "findings": findings}
         with self.lock:
             (self._dir(case_id) / "message-subject-analysis.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         self.invalidate(case_id)

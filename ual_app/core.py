@@ -47,6 +47,8 @@ ALIASES = {
     "messageid": ["InternetMessageId", "InternetMessageIDs", "Item.InternetMessageId", "MessageSubject.InternetMessageIDs",
                   "MessageId", "NetworkMessageId"],
     "subject": ["Subject", "Item.Subject", "MessageSubject.Subjects", "MessageSubject.Pairs"],
+    "useragent": ["Mail.UserAgent", "ActorInfoString", "UserAgent", "ClientInfoString", "Login.UserAgent"],
+    "actorinfo": ["Mail.ActorInfoString", "ActorInfoString"],
     "result": ["ResultStatus", "Result", "LogonError", "Status"],
     "workload": ["Workload"],
     "recordtype": ["RecordType"],
@@ -198,22 +200,23 @@ def normalize_message_id_display(row: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
-def extract_message_subject_pairs(row: Dict[str, Any]) -> List[Tuple[str, str]]:
-    pairs: List[Tuple[str, str]] = []
+def extract_message_subject_details(row: Dict[str, Any]) -> List[Tuple[str, str, str]]:
+    details: Dict[Tuple[str, str], str] = {}
 
-    def add(message_id: Any, subject: Any = "") -> None:
+    def add(message_id: Any, subject: Any = "", size: Any = "") -> None:
         message_id = format_message_id(message_id)
         subject = str(subject or "").strip()
+        size = str(size or "").strip()
         if message_id and "@" in message_id:
-            pair = (message_id, subject)
-            if pair not in pairs:
-                pairs.append(pair)
+            key = (message_id, subject)
+            if key not in details or not details[key]:
+                details[key] = size
 
     def walk(value: Any) -> None:
         if isinstance(value, dict):
             lowered = {str(key).lower(): item for key, item in value.items()}
             if "internetmessageid" in lowered:
-                add(lowered["internetmessageid"], lowered.get("subject", ""))
+                add(lowered["internetmessageid"], lowered.get("subject", ""), lowered.get("sizeinbytes", ""))
             for item in value.values():
                 walk(item)
         elif isinstance(value, list):
@@ -224,7 +227,8 @@ def extract_message_subject_pairs(row: Dict[str, Any]) -> List[Tuple[str, str]]:
         if str(key).lower().endswith("internetmessageid"):
             prefix = str(key)[:-len("InternetMessageId")]
             subject = next((item for name, item in row.items() if str(name).lower() == f"{prefix}subject".lower()), "")
-            add(value, subject)
+            size = next((item for name, item in row.items() if str(name).lower() == f"{prefix}sizeinbytes".lower()), "")
+            add(value, subject, size)
         if isinstance(value, str):
             text = value.strip()
             if text.startswith(("[", "{")) and "internetmessageid" in text.casefold():
@@ -239,18 +243,26 @@ def extract_message_subject_pairs(row: Dict[str, Any]) -> List[Tuple[str, str]]:
                 add(message_id, subject)
 
     fallback_subject = next((str(row.get(key, "")).strip() for key in ("Item.Subject", "Subject") if row.get(key)), "")
-    paired_ids = {message_id for message_id, _ in pairs}
-    for message_id in str(row.get("InternetMessageIDs", "")).split(";"):
+    paired_ids = {message_id for message_id, _ in details}
+    raw_ids = str(row.get("InternetMessageIDs", "")).split(";")
+    fallback_size = next((str(row.get(key, "")).strip() for key in ("Item.SizeInBytes", "SizeInBytes") if row.get(key)), "")
+    for message_id in raw_ids:
         clean_id = format_message_id(message_id)
         if clean_id and clean_id not in paired_ids:
-            add(clean_id, fallback_subject if len(str(row.get("InternetMessageIDs", "")).split(";")) == 1 else "")
-    return pairs
+            single = len(raw_ids) == 1
+            add(clean_id, fallback_subject if single else "", fallback_size if single else "")
+    return [(message_id, subject, size) for (message_id, subject), size in details.items()]
 
 
-def message_subject_export_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+def extract_message_subject_pairs(row: Dict[str, Any]) -> List[Tuple[str, str]]:
+    return [(message_id, subject) for message_id, subject, _ in extract_message_subject_details(row)]
+
+
+def message_subject_export_rows(rows: List[Dict[str, Any]], include_size: bool = False) -> List[Dict[str, str]]:
     unique: Dict[str, Dict[str, str]] = {}
     for row in rows:
-        for line in str(row.get("MessageSubject.Pairs", "") or "").splitlines():
+        sizes = str(row.get("MessageSubject.SizeInBytes", "") or "").split("; ")
+        for index, line in enumerate(str(row.get("MessageSubject.Pairs", "") or "").splitlines()):
             message_id, separator, subject = line.partition(" → ")
             if not separator:
                 continue
@@ -260,11 +272,18 @@ def message_subject_export_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, st
             subject = subject.strip()
             if subject == "(no subject)":
                 subject = ""
+            size = sizes[index].strip() if index < len(sizes) else ""
+            if size == "(not recorded)":
+                size = ""
             key = message_id.casefold()
             if key not in unique:
                 unique[key] = {"InternetMessageId": message_id, "Subject": subject}
+                if include_size:
+                    unique[key]["SizeInBytes"] = size
             elif not unique[key]["Subject"] and subject:
                 unique[key]["Subject"] = subject
+            if include_size and not unique[key].get("SizeInBytes") and size:
+                unique[key]["SizeInBytes"] = size
     return list(unique.values())
 
 
@@ -326,6 +345,36 @@ def add_login_review(row: Dict[str, Any]) -> Dict[str, Any]:
     for source, display in LOGIN_EXTENDED_FIELDS.items():
         value = next((v for k, v in extended.items() if k.lower() == source), "")
         if value != "": row[f"Login.{display}"] = value
+    return row
+
+
+def _populated_field(row: Dict[str, Any], *names: str) -> str:
+    wanted = {name.casefold() for name in names}
+    for key, value in row.items():
+        if str(key).casefold() in wanted and str(value or "").strip():
+            return str(value).strip()
+    return ""
+
+
+def _actor_user_agent(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"(?:^|;)\s*UserAgent\s*(?:=|:|-)\s*(.+?)\s*$", text, re.I)
+    return match.group(1).strip() if match else ""
+
+
+def add_mail_review(row: Dict[str, Any]) -> Dict[str, Any]:
+    if not matches_event_category(row, "email_access"):
+        return row
+    actor = _populated_field(row, "ActorInfoString", "AuditData.ActorInfoString")
+    reported_agent = _populated_field(row, "UserAgent", "AuditData.UserAgent")
+    client = _populated_field(row, "ClientInfoString", "AuditData.ClientInfoString")
+    if actor:
+        row["Mail.ActorInfoString"] = actor
+    user_agent = _actor_user_agent(actor) or actor or reported_agent
+    if user_agent:
+        row["Mail.UserAgent"] = user_agent
+    if client:
+        row["Mail.ClientInfoString"] = client
     return row
 
 
@@ -753,6 +802,7 @@ def row_columns(rows: List[Dict[str, Any]]) -> List[str]:
         "InboxRule.Name", "InboxRule.Details",
         "InboxRule.From", "InboxRule.MoveToFolder", "InboxRule.ForwardTo", "InboxRule.RedirectTo",
         "InboxRule.ForwardAsAttachmentTo", "InboxRule.DeleteMessage", "InboxRule.StopProcessingRules",
+        "Mail.ActorInfoString", "Mail.UserAgent", "Mail.ClientInfoString",
         "UserId", "UserKey", "UserType", "ClientIP",
         "ClientIPAddress", "Workload", "RecordType", "ResultStatus", "ObjectId", "ItemName",
         "FolderPathName", "MailboxOwnerUPN", "SiteUrl", "SourceFileName", "DestinationFileName",
