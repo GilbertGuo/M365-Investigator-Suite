@@ -437,7 +437,7 @@ async function loadMessageTraceRows(){
     $('#messageTracePrev').disabled=data.page<=1;$('#messageTraceNext').disabled=data.page>=pages;
     $('#messageTraceHead').innerHTML='<tr>'+data.selected.map(column=>{
       const timestamp=isTimestampColumn(column),sortable=timestamp||['_Row','MessageTraceHunt.Risk','MessageTraceHunt.Score','MessageTraceHunt.DomainAgeDays'].includes(column),active=messageTraceState.sortField===column,indicator=active?(messageTraceState.sortDirection==='asc'?' ↑':' ↓'):'',sortLabel=timestamp?'chronologically':'by value';
-      return `<th data-column="${esc(column)}" class="${sortable?'sortable':''}" ${sortable?`tabindex="0" role="button" title="Click to sort ${sortLabel} · drag to reorder · right-click for options"`:''}>${esc(column)}${indicator}</th>`;
+      return `<th data-column="${esc(column)}" class="${sortable?'sortable':''}" title="${sortable?`Click the label to sort ${sortLabel} · `:''}drag to reorder · right-click for options"><span class="column-header-content"><span class="column-header-label" ${sortable?'tabindex="0" role="button"':''}>${esc(column)}${indicator}</span><button class="column-filter-button" type="button" title="Filter ${esc(column)}" aria-label="Filter ${esc(column)}">▾</button></span></th>`;
     }).join('')+'</tr>';
     $('#messageTraceBody').innerHTML=data.rows.length?data.rows.map((row,rowIndex)=>`<tr class="${row.__Tagged?'tagged-row':''}">`+data.selected.map(column=>`<td data-row="${rowIndex}" data-column="${esc(column)}" data-value="${esc(row[column])}" title="${esc(row[column])}">${esc(row[column])}</td>`).join('')+'</tr>').join(''):`<tr><td colspan="${Math.max(1,data.selected.length)}">No matching MTL rows</td></tr>`;
     bindMessageTraceInteractions();
@@ -523,7 +523,11 @@ function bindMessageTraceInteractions(){
   $$('#messageTraceHead th').forEach(header=>{
     const sortable=header.classList.contains('sortable');
     const sort=()=>{const column=header.dataset.column;messageTraceState.sortDirection=messageTraceState.sortField===column&&messageTraceState.sortDirection==='asc'?'desc':'asc';messageTraceState.sortField=column;messageTraceState.page=1;loadMessageTraceRows();};
-    if(sortable){header.onclick=sort;header.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();sort();}};}
+    const sortTarget=header.querySelector('.column-header-label');
+    if(sortable){sortTarget.onclick=sort;sortTarget.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();sort();}};}
+    const filterButton=header.querySelector('.column-filter-button');
+    filterButton.onclick=event=>{event.stopPropagation();openUniqueValues(header.dataset.column,'mtl');};
+    filterButton.onmousedown=event=>event.stopPropagation();
     header.draggable=true;
     header.addEventListener('dragstart',event=>{draggedColumn=header.dataset.column;contextScope='mtl';header.classList.add('dragging');event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',draggedColumn);});
     header.addEventListener('dragend',()=>{draggedColumn=null;$$('#messageTraceHead th').forEach(item=>item.classList.remove('dragging','drag-target'));});
@@ -680,7 +684,7 @@ async function loadRows() {
       const descendingNext=active&&state.sortDirection==='asc';
       const nextOrder=isTimestampColumn(c)?(descendingNext?'newest first':'oldest first'):c==='Travel.Risk'?(descendingNext?'highest risk first':'lowest risk first'):(descendingNext?'highest first':'lowest first');
       const title=sortable?`Click to sort ${nextOrder} · drag to reorder · right-click for options`:'Drag to reorder · right-click for options';
-      return `<th draggable="true" data-column="${esc(c)}" ${sortable?'data-sortable="true" tabindex="0" role="button"':''} aria-sort="${ariaSort}" class="${sortable?'sortable':''}" title="${title}">${esc(c)}${indicator}</th>`;
+      return `<th draggable="true" data-column="${esc(c)}" ${sortable?'data-sortable="true"':''} aria-sort="${ariaSort}" class="${sortable?'sortable':''}" title="${title}"><span class="column-header-content"><span class="column-header-label" ${sortable?'tabindex="0" role="button"':''}>${esc(c)}${indicator}</span><button class="column-filter-button" type="button" title="Filter ${esc(c)}" aria-label="Filter ${esc(c)}">▾</button></span></th>`;
     }).join('')+'</tr>';
     $('#tbody').innerHTML=data.rows.length ? data.rows.map((row,rowIndex)=>`<tr class="${row.__Tagged?'tagged-row':''}">`+data.selected.map(c=>`<td data-row="${rowIndex}" data-column="${esc(c)}" title="Click to show full value · right-click for row actions and filters">${esc(row[c])}</td>`).join('')+'</tr>').join('') : `<tr><td colspan="${data.selected.length}">No matching activity</td></tr>`;
     bindHeaderInteractions(); bindCellInteractions(); applyFrozenColumns('ual');
@@ -730,7 +734,7 @@ let draggedColumn=null;
 let contextColumn=null;
 let contextCell=null;
 let contextScope='ual';
-const uniqueValueState={scope:'ual',column:'',search:'',offset:0,values:[],request:0,includes:new Set(),excludes:new Set()};
+const uniqueValueState={scope:'ual',column:'',search:'',offset:0,values:[],request:0,allSelected:true,includes:new Set(),excludes:new Set()};
 function hideColumnMenu(){ $('#columnMenu').classList.add('hidden'); }
 function hideValueMenu(){ $('#valueMenu').classList.add('hidden'); }
 function hideMenus(){ hideColumnMenu(); hideValueMenu(); }
@@ -772,11 +776,15 @@ function toggleColumnSort(column){
 function bindHeaderInteractions() {
   $$('#thead th').forEach(header=>{
     if(header.dataset.sortable==='true') {
-      header.addEventListener('click',()=>toggleColumnSort(header.dataset.column));
-      header.addEventListener('keydown',event=>{
+      const sortTarget=header.querySelector('.column-header-label');
+      sortTarget.addEventListener('click',()=>toggleColumnSort(header.dataset.column));
+      sortTarget.addEventListener('keydown',event=>{
         if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleColumnSort(header.dataset.column);}
       });
     }
+    const filterButton=header.querySelector('.column-filter-button');
+    filterButton.addEventListener('click',event=>{event.stopPropagation();openUniqueValues(header.dataset.column,'ual');});
+    filterButton.addEventListener('mousedown',event=>event.stopPropagation());
     header.addEventListener('dragstart',event=>{
       draggedColumn=header.dataset.column; contextScope='ual'; header.classList.add('dragging');
       event.dataTransfer.effectAllowed='move'; event.dataTransfer.setData('text/plain',draggedColumn);
@@ -887,16 +895,30 @@ function showUniqueValueTooltip(button,item){
 function closeUniqueValues(){uniqueValueState.request+=1;hideUniqueValueTooltip();$('#uniqueValuesDrawer').classList.add('hidden');}
 function updateUniqueSelectionControls(){
   const includeCount=uniqueValueState.includes.size, excludeCount=uniqueValueState.excludes.size, total=includeCount+excludeCount;
-  $('#uniqueSelectionSummary').textContent=total?`${includeCount} included · ${excludeCount} excluded`:'No values selected';
-  $('#applyUniqueSelection').disabled=!total;
-  $('#applyUniqueSelection').textContent=total?`Apply selected (${total})`:'Apply selected';
+  const hasFilter=excludeCount>0||(!uniqueValueState.allSelected&&includeCount>0);
+  $('#uniqueSelectionSummary').textContent=uniqueValueState.allSelected?(excludeCount?`All values except ${excludeCount} selected`:'All values selected'):(includeCount?`${includeCount} included · ${excludeCount} excluded`:'No values selected');
+  $('#applyUniqueSelection').disabled=!hasFilter;
+  $('#applyUniqueSelection').textContent=hasFilter?`Apply filter (${total})`:'Apply filter';
   $$('#uniqueValuesList [data-unique-index]').forEach(button=>{
     const item=uniqueValueState.values[Number(button.dataset.uniqueIndex)];
     if(!item) return;
     const selected=button.dataset.uniqueMode==='exclude'?uniqueValueState.excludes.has(item.value):uniqueValueState.includes.has(item.value);
     button.classList.toggle('selected',selected);
-    button.closest('.unique-value-item')?.classList.toggle('has-selection',uniqueValueState.includes.has(item.value)||uniqueValueState.excludes.has(item.value));
+    button.closest('.unique-value-item')?.classList.toggle('has-selection',uniqueValueState.excludes.has(item.value)||(!uniqueValueState.allSelected&&uniqueValueState.includes.has(item.value)));
   });
+  $$('#uniqueValuesList input[data-unique-check]').forEach(input=>{
+    const item=uniqueValueState.values[Number(input.dataset.uniqueCheck)];
+    input.checked=Boolean(item&&(uniqueValueState.allSelected?!uniqueValueState.excludes.has(item.value):uniqueValueState.includes.has(item.value)));
+  });
+}
+function toggleUniqueCheckbox(item,checked){
+  if(uniqueValueState.allSelected){
+    if(checked)uniqueValueState.excludes.delete(item.value);else uniqueValueState.excludes.add(item.value);
+  }else{
+    if(checked)uniqueValueState.includes.add(item.value);else uniqueValueState.includes.delete(item.value);
+    uniqueValueState.excludes.delete(item.value);
+  }
+  updateUniqueSelectionControls();
 }
 function toggleUniqueSelection(item,mode){
   const selected=mode==='exclude'?uniqueValueState.excludes:uniqueValueState.includes;
@@ -910,16 +932,20 @@ function renderUniqueValues(data,append=false){
   uniqueValueState.values=append?[...uniqueValueState.values,...data.values]:data.values;
   const shown=uniqueValueState.values.length;
   $('#uniqueValuesSummary').textContent=`${data.totalUnique.toLocaleString()} unique value${data.totalUnique===1?'':'s'} in ${data.matchingRows.toLocaleString()} matching row${data.matchingRows===1?'':'s'} · showing ${shown.toLocaleString()} of ${data.matchingUnique.toLocaleString()}${data.matchingUnique!==data.totalUnique?' search matches':''}`;
-  $('#uniqueValuesList').innerHTML=uniqueValueState.values.length?uniqueValueState.values.map((item,index)=>`<div class="unique-value-item"><button class="unique-value-label ${item.value===''?'empty':''}" data-unique-index="${index}" data-unique-mode="include" aria-label="Include value: ${esc(item.label)}">${esc(item.label)}</button><span>${item.count.toLocaleString()}</span><button data-unique-index="${index}" data-unique-mode="include" title="Include">+</button><button data-unique-index="${index}" data-unique-mode="exclude" title="Exclude">−</button></div>`).join(''):'<p class="status">No values match this search.</p>';
+  $('#uniqueValuesList').innerHTML=uniqueValueState.values.length?uniqueValueState.values.map((item,index)=>`<div class="unique-value-item"><label class="unique-value-choice ${item.value===''?'empty':''}" title="${esc(item.label)}"><input type="checkbox" data-unique-check="${index}"><span>${esc(item.label)}</span></label><span>${item.count.toLocaleString()}</span><button data-unique-index="${index}" data-unique-mode="exclude" title="Exclude this value" aria-label="Exclude ${esc(item.label)}">−</button></div>`).join(''):'<p class="status">No values match this search.</p>';
   $('#loadMoreUniqueValues').classList.toggle('hidden',!data.hasMore);
   $$('#uniqueValuesList button[data-unique-index]').forEach(button=>button.onclick=()=>{
     const item=uniqueValueState.values[Number(button.dataset.uniqueIndex)];
     toggleUniqueSelection(item,button.dataset.uniqueMode);
   });
-  $$('#uniqueValuesList .unique-value-label').forEach(button=>{
-    const show=()=>showUniqueValueTooltip(button,uniqueValueState.values[Number(button.dataset.uniqueIndex)]);
-    button.addEventListener('mouseenter',show);button.addEventListener('mouseleave',hideUniqueValueTooltip);
-    button.addEventListener('focus',show);button.addEventListener('blur',hideUniqueValueTooltip);
+  $$('#uniqueValuesList input[data-unique-check]').forEach(input=>input.onchange=()=>{
+    const item=uniqueValueState.values[Number(input.dataset.uniqueCheck)];
+    toggleUniqueCheckbox(item,input.checked);
+  });
+  $$('#uniqueValuesList .unique-value-choice').forEach(label=>{
+    const input=label.querySelector('input'),show=()=>showUniqueValueTooltip(label,uniqueValueState.values[Number(input.dataset.uniqueCheck)]);
+    label.addEventListener('mouseenter',show);label.addEventListener('mouseleave',hideUniqueValueTooltip);
+    input.addEventListener('focus',show);input.addEventListener('blur',hideUniqueValueTooltip);
   });
   $('#uniqueValuesList').onscroll=hideUniqueValueTooltip;
   updateUniqueSelectionControls();
@@ -927,14 +953,14 @@ function renderUniqueValues(data,append=false){
 async function loadUniqueValues(reset=true){
   const request=++uniqueValueState.request;
   if(reset){uniqueValueState.offset=0;uniqueValueState.values=[];$('#uniqueValuesList').innerHTML='<p class="status">Loading values…</p>';}
-  const mtl=uniqueValueState.scope==='mtl',p=new URLSearchParams({column:uniqueValueState.column,q:mtl?messageTraceState.query:state.query,search:uniqueValueState.search,offset:uniqueValueState.offset,limit:200});
+  const mtl=uniqueValueState.scope==='mtl',p=new URLSearchParams({column:uniqueValueState.column,q:mtl?messageTraceState.query:state.query,search:uniqueValueState.search,offset:uniqueValueState.offset,limit:500});
   if(!mtl&&state.operation)p.set('operation',state.operation);if(!mtl&&state.category)p.set('category',state.category);
   const url=mtl?`/api/cases/${state.caseId}/message-traces/${encodeURIComponent(messageTraceState.traceId)}/column-values?${p}`:`/api/cases/${activeUalId()}/column-values?${p}`;
   try{const data=await api(url);if(request!==uniqueValueState.request)return;renderUniqueValues(data,!reset);}
   catch(error){if(request===uniqueValueState.request)$('#uniqueValuesList').innerHTML=`<p class="status error">${esc(error.message)}</p>`;}
 }
 function openUniqueValues(column,scope='ual'){
-  uniqueValueState.scope=scope;uniqueValueState.column=column;uniqueValueState.search='';uniqueValueState.includes.clear();uniqueValueState.excludes.clear();$('#uniqueValuesColumn').textContent=column;$('#uniqueValuesSearch').value='';
+  uniqueValueState.scope=scope;uniqueValueState.column=column;uniqueValueState.search='';uniqueValueState.allSelected=true;uniqueValueState.includes.clear();uniqueValueState.excludes.clear();$('#uniqueValuesColumn').textContent=column;$('#uniqueValuesSearch').value='';
   $$('.drawer').forEach(drawer=>drawer.classList.add('hidden'));$('#uniqueValuesDrawer').classList.remove('hidden');hideColumnMenu();loadUniqueValues(true);$('#uniqueValuesSearch').focus();
   updateUniqueSelectionControls();
 }
@@ -1001,7 +1027,14 @@ $('#closeUniqueValues').onclick=closeUniqueValues;
 let uniqueSearchTimer=null;
 $('#uniqueValuesSearch').oninput=()=>{clearTimeout(uniqueSearchTimer);uniqueSearchTimer=setTimeout(()=>{uniqueValueState.search=$('#uniqueValuesSearch').value.trim();loadUniqueValues(true);},220);};
 $('#loadMoreUniqueValues').onclick=()=>{uniqueValueState.offset=uniqueValueState.values.length;loadUniqueValues(false);};
-$('#clearUniqueSelection').onclick=()=>{uniqueValueState.includes.clear();uniqueValueState.excludes.clear();updateUniqueSelectionControls();};
+$('#selectAllUniqueValues').onclick=()=>{uniqueValueState.allSelected=true;uniqueValueState.includes.clear();uniqueValueState.excludes.clear();updateUniqueSelectionControls();};
+$('#clearUniqueSelection').onclick=()=>{uniqueValueState.allSelected=false;uniqueValueState.includes.clear();uniqueValueState.excludes.clear();updateUniqueSelectionControls();};
+function sortFromUniqueValues(direction){
+  if(uniqueValueState.scope==='mtl'){messageTraceState.sortField=uniqueValueState.column;messageTraceState.sortDirection=direction;messageTraceState.page=1;closeUniqueValues();loadMessageTraceRows();return;}
+  state.sortField=uniqueValueState.column;state.sortDirection=direction;state.page=1;closeUniqueValues();loadRows();
+}
+$('#uniqueSortAsc').onclick=()=>sortFromUniqueValues('asc');
+$('#uniqueSortDesc').onclick=()=>sortFromUniqueValues('desc');
 $('#applyUniqueSelection').onclick=()=>{
   const includes=[...uniqueValueState.includes].map(value=>exactFilterToken({column:uniqueValueState.column,value}));
   const excludes=[...uniqueValueState.excludes].map(value=>exactFilterToken({column:uniqueValueState.column,value},true));
