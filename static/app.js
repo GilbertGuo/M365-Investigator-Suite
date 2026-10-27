@@ -38,7 +38,7 @@ const VIEW_DEFS=[['','All activity'],['logon','Logon'],['inbox_rules','Inbox rul
 const CATEGORY_MIGRATIONS={logins:'logon',files:'file_access',mail:'email_access',teams:'other'};
 const COLUMN_PREFERENCE_VERSION=6;
 const state = {caseId:null,caseMeta:null,ualId:null,ualDatasets:[],ualViews:{},overview:null,page:1,size:50,query:'',operation:'',category:'',sortField:'',sortDirection:'asc',columns:[],frozenColumns:[],currentRows:[],currentTotal:0,currentTagged:0};
-const MESSAGE_TRACE_PREFERRED=['_Row','Received','SenderAddress','RecipientAddress','Subject','Status','MessageId','NetworkMessageId','OriginalClientIP','ClientIP','FromIP','ToIP','Directionality','Size'];
+const MESSAGE_TRACE_PREFERRED=['_Row','Received','date_time_utc','SenderAddress','RecipientAddress','Subject','Status','MessageId','NetworkMessageId','OriginalClientIP','ClientIP','FromIP','ToIP','Directionality','Size'];
 const WHOIS_SUFFIX_ORDER=['Domain','RegisteredDomain','Registrar','RegistrationDate','ExpirationDate','LastChangedDate','Status','NameServers','DNSSEC','Lookup_Status','Error'];
 const MESSAGE_TRACE_HUNT_COLUMNS=['MessageTraceHunt.Flag','MessageTraceHunt.Risk','MessageTraceHunt.Score','MessageTraceHunt.SuspiciousReason','MessageTraceHunt.NewDomains','MessageTraceHunt.DomainAgeDays','MessageTraceHunt.DomainRegistrationDates','MessageTraceHunt.SubjectKeywords','MessageTraceHunt.ServiceDomains'];
 const messageTraceState={overview:null,traces:[],traceId:null,page:1,size:50,query:'',sortField:'',sortDirection:'asc',columns:[],frozenColumns:[],views:{},currentRows:[],currentTotal:0,currentTagged:0};
@@ -366,7 +366,7 @@ function messageTraceIpColumns(columns){
 function addMessageTraceHuntColumns(base,available){
   const additions=MESSAGE_TRACE_HUNT_COLUMNS.filter(column=>available.includes(column)&&!base.includes(column));
   const result=[...base],subjectIndex=result.indexOf('Subject'),insertAt=subjectIndex>=0?subjectIndex+1:Math.min(4,result.length);
-  result.splice(insertAt,0,...additions);return result.slice(0,50);
+  result.splice(insertAt,0,...additions);return result;
 }
 function addMessageTraceTagColumn(base,available){
   if(!available.includes('Review.Tag')||base.includes('Review.Tag'))return base;
@@ -599,7 +599,7 @@ $('#messageTraceHuntButton').onclick=async()=>{
     messageTraceState.overview.columns=data.columns;messageTraceState.page=1;
     if(data.findingCount){
       messageTraceState.query='MessageTraceHunt.Flag:=True';$('#messageTraceQuery').value=messageTraceState.query;
-      messageTraceState.columns=addMessageTraceHuntColumns(messageTraceDefaultColumns(data.columns,messageTraceState.overview.enrichmentColumns||[]),data.columns);
+      messageTraceState.columns=addMessageTraceHuntColumns(messageTraceState.columns.filter(column=>data.columns.includes(column)),data.columns);
     }else{
       messageTraceState.columns=messageTraceState.columns.filter(column=>data.columns.includes(column));
       if(messageTraceState.query==='MessageTraceHunt.Flag:=True'){messageTraceState.query='';$('#messageTraceQuery').value='';}
