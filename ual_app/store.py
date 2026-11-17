@@ -3,13 +3,16 @@ import hashlib
 import json
 import re
 import secrets
-from collections import OrderedDict
+import shutil
+from collections import Counter, OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
 from typing import Any, Dict, List, Optional
 
 from .app_mapping import add_app_name_mapping
+from .disk_ual import DiskRows, DiskMetrics, MAX_UAL_BYTES, STREAM_FORMATS, connection, iter_source
+from .signin_review import prepare_signin_review
 from .core import IP_API_OUTPUT_FIELDS, RDAP_OUTPUT_FIELDS, add_inbox_rule_review, add_login_review, add_mail_review, analyze_impossible_travel, analyze_suspicious_logins, build_event_summary, build_message_trace_event_summary, email_domains, extract_message_subject_details, format_message_id, hunt_suspicious_message_trace, message_subject_export_rows, message_trace_ip_columns, normalize_ip, normalize_message_id_display, parse_message_trace_rows, parse_rows, read_upload, row_columns, summarize, utc_now
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
@@ -24,6 +27,12 @@ class CaseStore:
         self._overview_cache: Dict[str, Dict[str, Any]] = {}
         self._message_trace_rows_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._message_trace_overview_cache: Dict[str, Dict[str, Any]] = {}
+        self._imports = {}
+        self._disk_review_locks = {}
+
+    def disk_review_lock(self, case_id):
+        with self.lock:
+            return self._disk_review_locks.setdefault(case_id, RLock())
 
     def invalidate(self, case_id: str) -> None:
         with self.lock:
@@ -142,7 +151,9 @@ class CaseStore:
                      "ualDatasetCount": len(datasets)})
         if not (case_dir / "rows.jsonl").is_file():
             meta["sourceFile"] = f"{len(datasets)} UAL dataset{'s' if len(datasets) != 1 else ''}"
-        (case_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        temporary = case_dir / 'meta.json.tmp'
+        temporary.write_text(json.dumps(meta, indent=2), encoding='utf-8')
+        temporary.replace(case_dir / 'meta.json')
 
     def create_ual_dataset(self, case_id: str, filename: str, raw: bytes, name: str = "") -> Dict[str, Any]:
         if not re.fullmatch(r"[a-f0-9]{12}", str(case_id or "")):
@@ -171,6 +182,151 @@ class CaseStore:
         self._refresh_case_ual_summary(case_id)
         return meta
 
+    def import_status(self, case_id, job_id):
+        with self.lock:
+            job = self._imports.get(job_id)
+            if job is None or job['caseId'] != case_id:
+                raise KeyError('Import not found')
+            return {key: value for key, value in job.items() if key != 'directory'}
+
+    def receive_ual_stream(self, case_id, filename, stream, length, name='', signin_review=False):
+        if not re.fullmatch(r'[a-f0-9]{12}', str(case_id)) or not (self.root / case_id / 'meta.json').is_file():
+            raise KeyError('Case not found')
+        if signin_review and Path(filename).suffix.casefold() != '.csv':
+            raise ValueError('Sign-in Review accepts CSV files only')
+        if Path(filename).suffix.casefold() not in STREAM_FORMATS:
+            raise ValueError('Streaming UAL import accepts CSV, TXT, JSONL, and NDJSON files')
+        if length <= 0 or length > MAX_UAL_BYTES:
+            raise ValueError('Streaming file must be between 1 byte and 8 GiB')
+        job_id = secrets.token_hex(6)
+        directory = self.root / case_id / ('signin-reviews' if signin_review else 'ual') / '.imports' / job_id
+        with self.lock:
+            if any(job['phase'] not in ('complete', 'failed') for job in self._imports.values()):
+                raise ValueError('Another file import or sign-in preparation is running; wait for it to finish')
+            for key in list(self._imports):
+                if len(self._imports) < 20:
+                    break
+                if self._imports[key]['phase'] in ('complete', 'failed'):
+                    self._imports.pop(key)
+            self._imports[job_id] = {'id': job_id, 'caseId': case_id, 'phase': 'uploading',
+                                     'bytes': 0, 'totalBytes': length, 'rows': 0, 'directory': str(directory),
+                                     'kind': 'signin-review' if signin_review else 'ual'}
+        original_name = Path(filename).name
+        filename = SAFE_NAME.sub('_', Path(original_name).stem)[:165] + Path(original_name).suffix.casefold()
+        try:
+            source = directory / 'source' / filename
+            source.parent.mkdir(parents=True)
+            digest, remaining = hashlib.sha256(), length
+            with source.open('wb') as output:
+                while remaining:
+                    chunk = stream.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError('Upload ended before the complete file arrived')
+                    output.write(chunk)
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+            with self.lock:
+                self._imports[job_id].update(phase='parsing', bytes=length)
+            worker = self._run_signin_review if signin_review else self._run_ual_import
+            Thread(target=worker, args=(job_id, source, name, digest.hexdigest()), daemon=True).start()
+            return self.import_status(case_id, job_id)
+        except Exception:
+            shutil.rmtree(directory, ignore_errors=True)
+            with self.lock:
+                self._imports[job_id].update(phase='failed', error='Upload failed; retry the file')
+            raise
+
+    def _run_signin_review(self, job_id, source, output_name, digest):
+        job = self._imports[job_id]
+        directory, case_id = Path(job['directory']), job['caseId']
+        try:
+            def progress(count):
+                with self.lock:
+                    job['rows'] = count
+            result = prepare_signin_review(source, directory / 'review.csv', progress)
+            meta = {'id': job_id, 'caseId': case_id, 'sourceFile': source.name, 'sourceSha256': digest,
+                    'sourceBytes': job['totalBytes'], 'createdAt': utc_now(), 'outputFilename': output_name,
+                    **result}
+            (directory / 'meta.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
+            destination = self.root / case_id / 'signin-reviews' / job_id
+            with self.lock:
+                if not (self.root / case_id / 'meta.json').is_file():
+                    raise ValueError('The case was removed during processing')
+                directory.rename(destination)
+                job.update(phase='complete', rows=result['rowCount'], meta=meta)
+        except Exception as error:
+            shutil.rmtree(directory, ignore_errors=True)
+            with self.lock:
+                job.update(phase='failed', error=str(error))
+
+    def signin_review_output(self, case_id, job_id):
+        if not re.fullmatch(r'[a-f0-9]{12}', str(case_id)) or not re.fullmatch(r'[a-f0-9]{12}', str(job_id)):
+            raise KeyError('Sign-in review not found')
+        directory = self.root / case_id / 'signin-reviews' / job_id
+        try:
+            meta = json.loads((directory / 'meta.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError) as error:
+            raise KeyError('Sign-in review not found') from error
+        if meta.get('caseId') != case_id or not (directory / 'review.csv').is_file():
+            raise KeyError('Sign-in review not found')
+        return directory / 'review.csv', meta
+
+    def _run_ual_import(self, job_id, source, name, digest):
+        job = self._imports[job_id]
+        directory, case_id = Path(job['directory']), job['caseId']
+        try:
+            operations, categories, columns = Counter(), Counter(), set()
+            from .core import ACTIVITY_CATEGORIES, matches_event_category, ip_columns
+            count = errors = 0
+            with connection(directory / 'rows.sqlite3') as db:
+                db.execute('PRAGMA journal_mode=WAL')
+                db.execute('CREATE TABLE records(id INTEGER PRIMARY KEY, data TEXT NOT NULL)')
+                db.execute('CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+                metrics = DiskMetrics(db, [])
+                for count, source_row in enumerate(iter_source(source), 1):
+                    parsed, error = parse_rows([source_row])
+                    row = parsed[0]
+                    row['_Row'] = count
+                    row = add_app_name_mapping(normalize_message_id_display(add_mail_review(add_login_review(add_inbox_rule_review(row)))))
+                    errors += error
+                    columns.update(row_columns([row]))
+                    db.execute('INSERT INTO records VALUES (?,?)', (count, json.dumps(row, ensure_ascii=False)))
+                    metrics.ips = ip_columns(row.keys())
+                    metrics.add(row)
+                    operations[str(row.get('Operation', 'Unknown') or 'Unknown')] += 1
+                    for category in ACTIVITY_CATEGORIES:
+                        categories[category] += matches_event_category(row, category)
+                    if count % 500 == 0:
+                        db.commit()
+                        with self.lock:
+                            job.update(rows=count)
+                if not count:
+                    raise ValueError('The uploaded UAL file contains no records')
+                ordered = row_columns([{column: True for column in columns}])
+                metrics.columns = ordered
+                summary = {**metrics.result(), 'categories': {key: categories[key] for key in ACTIVITY_CATEGORIES},
+                           'operations': [{'name': key, 'count': value} for key, value in operations.most_common(12)]}
+                db.executemany('INSERT INTO metadata VALUES (?,?)', [('columns', json.dumps(ordered)), ('summary', json.dumps(summary)), ('inboxRuleVersion', '1')])
+                db.execute('DROP TABLE indicators')
+                db.commit()
+            meta = {'id': job_id, 'caseId': case_id, 'name': (name or source.stem).strip()[:120],
+                    'sourceFile': source.name, 'sourceSha256': digest, 'sourceBytes': job['totalBytes'],
+                    'uploadedAt': utc_now(), 'rowCount': count, 'columnCount': len(ordered),
+                    'parseErrors': errors, 'storage': 'sqlite'}
+            (directory / 'meta.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
+            destination = self.root / case_id / 'ual' / 'datasets' / job_id
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with self.lock:
+                if not (self.root / case_id / 'meta.json').is_file():
+                    raise ValueError('The case was removed during import')
+                directory.rename(destination)
+                self._refresh_case_ual_summary(case_id)
+                job.update(phase='complete', rows=count, meta=meta)
+        except Exception as error:
+            shutil.rmtree(directory, ignore_errors=True)
+            with self.lock:
+                job.update(phase='failed', error=str(error))
+
     def delete_ual_dataset(self, case_id: str, dataset_id: str) -> Dict[str, Any]:
         if not re.fullmatch(r"[a-f0-9]{12}", str(case_id or "")) or not re.fullmatch(r"[a-f0-9]{12}", str(dataset_id or "")):
             raise KeyError("UAL dataset not found")
@@ -198,6 +354,10 @@ class CaseStore:
         return json.loads((self._dir(case_id) / "meta.json").read_text(encoding="utf-8"))
 
     def base_rows(self, case_id: str) -> List[Dict[str, Any]]:
+        database = self._dir(case_id) / 'rows.sqlite3'
+        if database.is_file():
+            self._upgrade_disk_inbox_rules(case_id, database)
+            return DiskRows(database)
         with (self._dir(case_id) / "rows.jsonl").open(encoding="utf-8") as handle:
             return [add_app_name_mapping(normalize_message_id_display(add_mail_review(add_login_review(add_inbox_rule_review(json.loads(line)))))) for line in handle if line.strip()]
 
@@ -213,6 +373,8 @@ class CaseStore:
         self.invalidate(case_id)
 
     def rows(self, case_id: str) -> List[Dict[str, Any]]:
+        if (self._dir(case_id) / 'rows.sqlite3').is_file():
+            return self.disk_rows(case_id)
         with self.lock:
             cached = self._rows_cache.get(case_id)
             if cached is not None:
@@ -257,6 +419,74 @@ class CaseStore:
                 evicted_case, _ = self._rows_cache.popitem(last=False)
                 self._overview_cache.pop(evicted_case, None)
         return rows
+
+    def disk_rows(self, case_id):
+        database = self._dir(case_id) / 'rows.sqlite3'
+        self._upgrade_disk_inbox_rules(case_id, database)
+        base = DiskRows(database)
+        results, sources = self.enrichment(case_id), self.enrichment_columns(case_id)
+        analyses = [('Travel', self.travel_analysis(case_id)), ('SuspiciousLogin', self.suspicious_login_analysis(case_id)),
+                    ('MessageSubject', self.message_subject_analysis(case_id))]
+        tags, events = self.row_tags(case_id), self.event_rows(case_id)
+        columns = set(base.columns)
+        columns.update(f'{source}_IPAPI_{suffix}' for source in sources for suffix in list(IP_API_OUTPUT_FIELDS) + ['IP_Class', 'Lookup_Status', 'Error']
+                       if any(result.get(suffix) is not None and result.get(suffix) != '' for result in results.values()))
+        for prefix, findings in analyses:
+            columns.update(f'{prefix}.{key}' for finding in findings.values() for key, value in finding.items() if value != '')
+        if tags:
+            columns.add('Review.Tag')
+        if events is None or events:
+            columns.add('Event')
+        def decorate(row):
+            for source in sources:
+                ip = normalize_ip(row.get(source))
+                if ip:
+                    result = results.get(ip, {})
+                    for suffix in list(IP_API_OUTPUT_FIELDS) + ['IP_Class', 'Lookup_Status', 'Error']:
+                        row[f'{source}_IPAPI_{suffix}'] = result.get(suffix, '')
+            key = str(row.get('_Row', ''))
+            for prefix, findings in analyses:
+                row.update({f'{prefix}.{name}': value for name, value in findings.get(key, {}).items()})
+            if key in tags:
+                row['Review.Tag'] = 'Of interest'
+            if events is None or (events is not False and key in events):
+                row['Event'] = build_event_summary(row)
+            return row
+        sidecars = ('enrichment.json', 'enrichment-columns.json', 'travel-analysis.json', 'suspicious-login-analysis.json',
+                    'message-subject-analysis.json', 'row-tags.json', 'event-summary.json')
+        revision = [('inboxRuleVersion', 1), ('eventSummaryVersion', 2)]
+        for filename in sidecars:
+            try:
+                info = (self._dir(case_id) / filename).stat()
+                revision.append((filename, info.st_mtime_ns, info.st_size))
+            except FileNotFoundError:
+                pass
+        return DiskRows(database, row_columns([{column: True for column in columns}]), decorate, revision=json.dumps(revision))
+
+    def _upgrade_disk_inbox_rules(self, case_id, database):
+        with self.disk_review_lock(case_id), connection(database) as db:
+            version = db.execute("SELECT value FROM metadata WHERE key='inboxRuleVersion'").fetchone()
+            if version and version[0] == '1':
+                return
+            columns = set(json.loads(db.execute("SELECT value FROM metadata WHERE key='columns'").fetchone()[0]))
+            last = 0
+            while True:
+                batch = db.execute("SELECT id,data FROM records WHERE id>? AND lower(json_extract(data,'$.Operation')) LIKE '%inboxrule%' ORDER BY id LIMIT 128", (last,)).fetchall()
+                if not batch:
+                    break
+                for identifier, raw in batch:
+                    row = json.loads(raw)
+                    add_inbox_rule_review(row)
+                    columns.update(row_columns([row]))
+                    updated = json.dumps(row, ensure_ascii=False)
+                    if updated != raw:
+                        db.execute('UPDATE records SET data=? WHERE id=?', (updated, identifier))
+                last = batch[-1][0]
+            ordered = row_columns([{column: True for column in columns}])
+            summary = json.loads(db.execute("SELECT value FROM metadata WHERE key='summary'").fetchone()[0])
+            summary['columns'] = len(ordered)
+            db.executemany('INSERT OR REPLACE INTO metadata VALUES (?,?)', [('columns', json.dumps(ordered)), ('summary', json.dumps(summary)), ('inboxRuleVersion', '1')])
+            db.commit()
 
     def message_subject_analysis(self, case_id: str) -> Dict[str, Dict[str, Any]]:
         path = self._dir(case_id) / "message-subject-analysis.json"
@@ -583,6 +813,11 @@ class CaseStore:
         row_id = str(row_number or "").strip()
         if not row_id or not re.fullmatch(r"\d+", row_id):
             raise ValueError("Choose a valid source row")
+        if (self._dir(case_id) / 'rows.sqlite3').is_file():
+            if int(row_id) < 1 or int(row_id) > len(self.base_rows(case_id)):
+                raise ValueError('Source row does not exist in this case')
+            result = self.set_row_tags(case_id, [row_id], tagged)
+            return {'row': row_id, 'tagged': tagged, 'taggedCount': result['taggedCount']}
         with self.lock:
             cached_rows = self._rows_cache.get(case_id)
             if cached_rows is None:
@@ -619,8 +854,12 @@ class CaseStore:
             cached_rows = self._rows_cache.get(case_id)
             if cached_rows is None:
                 cached_rows = self.rows(case_id)
-            available = {str(row.get("_Row", "")) for row in cached_rows}
-            row_ids = requested & available
+            if isinstance(cached_rows, DiskRows):
+                total = len(cached_rows)
+                row_ids = {key for key in requested if 1 <= int(key) <= total}
+            else:
+                available = {str(row.get("_Row", "")) for row in cached_rows}
+                row_ids = requested & available
             tags = self.row_tags(case_id)
             before = set(tags)
             if tagged: tags.update(row_ids)
@@ -631,7 +870,7 @@ class CaseStore:
             temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             temporary.replace(path)
 
-            for row in cached_rows:
+            for row in ([] if isinstance(cached_rows, DiskRows) else cached_rows):
                 if str(row.get("_Row", "")) not in row_ids: continue
                 if tagged: row["Review.Tag"] = "Of interest"
                 else: row.pop("Review.Tag", None)
@@ -643,6 +882,8 @@ class CaseStore:
                 cached_overview["summary"]["columns"] = len(columns)
                 cached_overview["summary"]["tagged"] = len(tags)
         changed = len(tags - before) if tagged else len(before - tags)
+        if isinstance(cached_rows, DiskRows):
+            self.invalidate(case_id)
         return {"matched": len(row_ids), "changed": changed, "tagged": tagged, "taggedCount": len(tags)}
 
     def extract_message_subjects(self, case_id: str) -> Dict[str, Any]:
@@ -710,7 +951,18 @@ class CaseStore:
             if cached is not None:
                 return cached
         rows = self.rows(case_id)
-        overview = {"meta": self.meta(case_id), "columns": row_columns(rows), "summary": summarize(rows),
+        if isinstance(rows, DiskRows):
+            derived = any((self._dir(case_id) / filename).is_file() for filename in ('enrichment-columns.json', 'travel-analysis.json', 'suspicious-login-analysis.json', 'message-subject-analysis.json', 'event-summary.json'))
+            if derived:
+                summary = rows.summary()
+            else:
+                with connection(rows.path) as db:
+                    summary = json.loads(db.execute("SELECT value FROM metadata WHERE key='summary'").fetchone()[0])
+                summary.update(columns=len(rows.columns), tagged=len(self.row_tags(case_id)))
+            columns = rows.columns
+        else:
+            columns, summary = row_columns(rows), summarize(rows)
+        overview = {"meta": self.meta(case_id), "columns": columns, "summary": summary,
                     "enrichment": self.enrichment(case_id), "enrichmentColumns": self.enrichment_columns(case_id)}
         with self.lock:
             self._overview_cache[case_id] = overview

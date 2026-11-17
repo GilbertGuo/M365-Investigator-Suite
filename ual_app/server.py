@@ -5,6 +5,7 @@ import json
 import mimetypes
 import re
 import traceback
+import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from email.parser import BytesParser
@@ -19,6 +20,7 @@ from .client_xlsx import client_xlsx_bytes
 from .core import ACTIVITY_CATEGORIES, compile_query, email_domains, enrich_domains_rdap, enrich_ips_ipapi, ip_columns, matches_event_category, message_trace_ip_columns, normalize_ip, row_columns, summarize_metrics
 from .email_collection import collect_emails, csv_targets, manual_targets
 from .store import CaseStore
+from .disk_ual import DiskRows
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 STATIC_ROOT = APP_ROOT / "static"
@@ -236,6 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_response({"meta": STORE.meta(case_id)})
                 if len(parts) == 4 and parts[3] == "ual-datasets":
                     return self.json_response({"datasets": STORE.ual_datasets(case_id)})
+                if len(parts) == 5 and parts[3] == 'ual-imports':
+                    return self.json_response(STORE.import_status(case_id, parts[4]))
+                if len(parts) == 5 and parts[3] == 'signin-reviews':
+                    return self.json_response(STORE.import_status(case_id, parts[4]))
+                if len(parts) == 6 and parts[3] == 'signin-reviews' and parts[5] == 'download':
+                    return self.download_signin_review(case_id, parts[4])
                 if len(parts) == 4 and parts[3] == "message-traces":
                     return self.json_response({"traces": STORE.message_traces(case_id)})
                 if len(parts) == 5 and parts[3] == "message-traces":
@@ -265,6 +273,17 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/cases": return self.create_case()
             if parsed.path == "/api/client-xlsx": return self.create_client_xlsx()
             if parsed.path == "/api/email-collection": return self.create_email_collection()
+            if len(parts) == 4 and parts[:2] == ['api', 'cases'] and parts[3] == 'signin-reviews':
+                params = parse_qs(parsed.query)
+                filename = params.get('filename', [''])[0]
+                output_name = csv_download_name(params.get('output', [''])[0], f'{Path(filename).stem}-signin-review')
+                job = STORE.receive_ual_stream(parts[2], filename, self.rfile, int(self.headers.get('Content-Length', '0')), output_name, signin_review=True)
+                return self.json_response(job, 202)
+            if len(parts) == 4 and parts[:2] == ['api', 'cases'] and parts[3] == 'ual-stream':
+                params = parse_qs(parsed.query)
+                length = int(self.headers.get('Content-Length', '0'))
+                job = STORE.receive_ual_stream(parts[2], params.get('filename', [''])[0], self.rfile, length, params.get('name', [''])[0])
+                return self.json_response(job, 202)
             if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "ual-datasets":
                 return self.create_ual_dataset(parts[2])
             if len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "message-traces":
@@ -332,6 +351,18 @@ class Handler(BaseHTTPRequestHandler):
         meta = STORE.create_ual_dataset(case_id, upload.filename, raw, form.getfirst("name", ""))
         self.json_response({"meta": meta, **STORE.overview(meta["id"])}, 201)
 
+    def download_signin_review(self, case_id, job_id):
+        path, meta = STORE.signin_review_output(case_id, job_id)
+        with path.open('rb') as source:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/csv; charset=utf-8')
+            self.send_header('Content-Disposition', f'attachment; filename="{csv_download_name(meta.get("outputFilename"), "signin-review")}"')
+            self.send_header('Content-Length', str(path.stat().st_size))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            while chunk := source.read(1024 * 1024):
+                self.wfile.write(chunk)
+
     def create_client_xlsx(self):
         form = self.read_multipart(252 * 1024 * 1024)
         upload = form["file"] if "file" in form else None
@@ -388,7 +419,10 @@ class Handler(BaseHTTPRequestHandler):
         operation = params.get("operation", [""])[0]
         category = params.get("category", [""])[0]
         predicate = compile_query(query)
-        rows = [r for r in STORE.rows(case_id) if predicate(r) and matches_event_category(r, category)]
+        source = STORE.rows(case_id)
+        if isinstance(source, DiskRows):
+            return source.where(lambda row: predicate(row) and matches_event_category(row, category) and (not operation or str(row.get('Operation', '')) == operation))
+        rows = [r for r in source if predicate(r) and matches_event_category(r, category)]
         if operation: rows = [r for r in rows if str(r.get("Operation", "")) == operation]
         return rows
 
@@ -435,6 +469,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def get_rows(self, case_id, params):
         all_rows = STORE.rows(case_id)
+        if isinstance(all_rows, DiskRows):
+            return self.get_disk_rows(case_id, params, all_rows)
         query = params.get("q", [""])[0]
         operation = params.get("operation", [""])[0]
         category = params.get("category", [""])[0]
@@ -467,6 +503,34 @@ class Handler(BaseHTTPRequestHandler):
                                    },
                                    "facets": facet_counts(query_rows, category_rows, operation)})
 
+    def get_disk_rows(self, case_id, params, all_rows):
+        overview = STORE.overview(case_id)
+        query, category, operation = (params.get(key, [''])[0] for key in ('q', 'category', 'operation'))
+        if not query.strip() and not category and not operation:
+            metrics = overview['summary']
+            facets = {'all': metrics['rows'], 'categories': metrics['categories'],
+                      'operationTotal': metrics['rows'], 'operations': metrics['operations']}
+        else:
+            with STORE.disk_review_lock(case_id):
+                metrics, facets = all_rows.review(query, category, operation, operation)
+        page = max(1, int(params.get('page', ['1'])[0]))
+        size = min(500, max(10, int(params.get('size', ['50'])[0])))
+        requested = params.get('columns', [''])[0]
+        columns = overview['columns']
+        selected = [column for column in requested.split(',') if column in columns] if requested else columns[:14]
+        field = params.get('sort', [''])[0]
+        field = field if is_sortable_field(field) and field in columns else ''
+        direction = 'desc' if params.get('direction', ['asc'])[0].lower() == 'desc' else 'asc'
+        rows = self.filtered(case_id, params) if query.strip() or category or operation else all_rows
+        rows.selection_key = all_rows.last_query_key
+        output = rows.page((page - 1) * size, size, field, direction, _timestamp_sort_value if is_timestamp_field(field) else None)
+        self.json_response({'rows': [{**{key: row.get(key, '') for key in selected}, '__RowId': row.get('_Row', ''),
+                                      '__Tagged': bool(row.get('Review.Tag'))} for row in output],
+                            'total': metrics['rows'], 'page': page, 'size': size, 'columns': columns, 'selected': selected,
+                            'sort': field, 'direction': direction,
+                            'metrics': {key: metrics[key] for key in ('rows', 'columns', 'users', 'ips', 'messageIds', 'tagged')},
+                            'facets': facets})
+
     def row_tag(self, case_id):
         body = self.read_json()
         tagged = body.get("tagged")
@@ -492,6 +556,9 @@ class Handler(BaseHTTPRequestHandler):
         if column not in STORE.overview(case_id)["columns"]:
             raise ValueError("Choose a valid column")
         rows = self.filtered(case_id, params)
+        if isinstance(rows, DiskRows):
+            result = rows.value_facets(column, params.get('search', [''])[0], params.get('offset', ['0'])[0], params.get('limit', ['200'])[0])
+            return self.json_response({'column': column, **result})
         result = column_value_facets(
             rows,
             column,
@@ -507,6 +574,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def export(self, case_id, params):
         rows = self.filtered(case_id, params)
+        if isinstance(rows, DiskRows):
+            filename = csv_download_name(params.get('filename', [''])[0], f'{case_id}-ual-export')
+            with tempfile.TemporaryFile('w+b') as output:
+                text = io.TextIOWrapper(output, encoding='utf-8-sig', newline='')
+                try:
+                    writer = csv.DictWriter(text, fieldnames=rows.columns, extrasaction='ignore')
+                    writer.writeheader()
+                    writer.writerows(rows)
+                    text.flush()
+                    length = output.tell()
+                    output.seek(0)
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/csv; charset=utf-8')
+                    self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+                    self.send_header('Content-Length', str(length))
+                    self.end_headers()
+                    while chunk := output.read(1024 * 1024):
+                        self.wfile.write(chunk)
+                finally:
+                    text.detach()
+            return
         data = STORE.csv_bytes(rows, STORE.enrichment(case_id))
         filename = csv_download_name(params.get("filename", [""])[0], f"{case_id}-ual-export")
         self.send_response(200); self.send_header("Content-Type", "text/csv; charset=utf-8")

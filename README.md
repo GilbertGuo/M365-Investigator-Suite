@@ -26,8 +26,9 @@
 | Case management | Independent local cases with multiple UAL and Message Trace datasets |
 | UAL Review | Parse Purview CSV, Excel, JSON, and JSONL exports; flatten `AuditData`; normalize Exchange `ActorInfoString`, user-agent, and client metadata; categorize Logon, Inbox Rules, Transport Rules, Mailbox Permissions, Email Access, File Access, and Other operations |
 | MTL Review | Parse Exchange Message Trace CSV files, including common UTF-16 exports; manage multiple traces per case |
+| Sign-in Review | Prepare exported login CSVs for client review using 17 focused columns, User second, field fallbacks, custom filenames, streaming progress, and CSV downloads |
 | Search and review | Field queries, wildcards, `AND`/`OR`, exclusions, empty values, time ranges, Excel-style header filters with searchable multi-select values, sorting, paging, draggable/frozen columns, and full-value inspection |
-| Investigation workflow | Persistent row tags, bulk tagging of filtered results, message-ID, subject, and available email-size extraction, plus a filter-scoped MessageIds/Subjects CSV with a custom filename and optional `SizeInBytes` column, Microsoft app-ID mapping, and tracker-ready Event narratives |
+| Investigation workflow | Persistent row tags, bulk tagging of filtered results, message-ID, subject, and available email-size extraction, plus a filter-scoped MessageIds/Subjects CSV with a custom filename and optional `SizeInBytes` column, Microsoft app-ID mapping, and tracker-ready Event narratives including recorded search-query text |
 | Enrichment | Filter-scoped IP intelligence and domain-registration enrichment with persistent results and in-drawer progress indicators |
 | Hunts | Suspicious logins, impossible travel, newly registered domains, suspicious subjects, and review-worthy third-party mail services |
 | Collection and export | Authorized Microsoft Graph email collection, customizable filtered CSV export, and client-shareable XLSX preparation |
@@ -87,6 +88,14 @@ python app.py
 
 Case evidence and derived analysis are stored under `cases/`. This directory is excluded from Git except for its placeholder.
 
+### Large UAL exports
+
+In **UAL Review → Add UAL export**, select a CSV or JSONL file as usual. CSV/TXT/JSONL/NDJSON files stream to disk and import into SQLite in batches, up to **8 GiB per file**, including a 1.8 GB export as one dataset. The form shows upload progress followed by the imported-record count. Keep the server running until the dataset is ready. No additional database service or dependency is required.
+
+Paging, query filtering, chronological sorting, unique values, metrics, and filtered CSV export use disk-backed processing. The original file and its SHA-256 are retained with the dataset. Existing datasets remain compatible. Excel and JSON-array imports retain the 250 MB limit; convert larger files to CSV or JSONL.
+
+Allow several times the source-file size in free disk space for the original, parsed database, and temporary sort/export files. Imports run one at a time. Large query scans may take time; enrichment and hunts still depend on the number of indicators/findings and may require additional memory. An interrupted import is not published as a dataset; re-upload after restarting the server. Interrupted staging files may remain under the case's `ual/.imports/` directory.
+
 ## Typical workflow
 
 1. Create a case.
@@ -96,6 +105,14 @@ Case evidence and derived analysis are stored under `cases/`. This directory is 
 5. Run the relevant hunt and inspect its reason, risk, and score columns.
 6. Generate concise Event narratives for a tracker.
 7. Export the complete filtered result as CSV or create a client XLSX workbook.
+
+## Prepare a client sign-in CSV
+
+1. In **UAL Review**, select **Logon**, apply the intended filters, optionally enrich IPs/run a login hunt, and choose **Export CSV**.
+2. Open **Sign-in Review** in the sidebar, upload that UTF-8 CSV, and optionally enter an output filename.
+3. Click **Prepare sign-in CSV**, wait for the processed-row count to finish, then download the result. You can feed it into **Client XLSX** afterward, subject to Excel's worksheet limit.
+
+The processor uses the supplied `prepare_client_signin_review.py` field mappings. It produces Time (UTC), User, IP Address, Location, ISP, Operation, Result, Result Detail, Application, Request Type, OS, Browser, Device Compliant, Risk (Heuristic), Risk Reasons (Heuristic), Session ID, and Record ID, in that order. It requires `UserId` or `AuditData.UserId`, leaves missing values blank, and retains every uploaded row in order. It does not calculate new risk or drop non-login rows, so export the intended Logon view first. CSVs up to 8 GiB and more than one million records stream through disk; source files and results are kept separately inside the local case.
 
 ## Query examples
 

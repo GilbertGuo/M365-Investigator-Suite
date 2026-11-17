@@ -16,7 +16,7 @@ function applyTheme(theme,persist=true){
 applyTheme(preferredTheme(),false);
 $('#themeToggle').onclick=()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark');
 const PREFERRED_COLUMNS = [
-  '_Row','CreationTime','Operation','Login.SessionId','UserId','UserKey','UserType','ClientIP','ClientIPAddress',
+  '_Row','CreationTime','Operation','InboxRule.Name','Login.SessionId','UserId','UserKey','UserType','ClientIP','ClientIPAddress',
   'Workload','RecordType','ResultStatus','ObjectId','ItemName','FolderPathName','MailboxOwnerUPN',
   'SiteUrl','SourceFileName','DestinationFileName','ExternalAccess','LogonType','ActorIpAddress',
   'InternetMessageId','InternetMessageIDs'
@@ -26,7 +26,7 @@ const CATEGORY_COLUMNS = {
   inbox_rules:['_Row','CreationTime','Operation','InboxRule.Name','InboxRule.Details','InboxRule.From','InboxRule.SentTo','InboxRule.SubjectContainsWords','InboxRule.MoveToFolder','InboxRule.ForwardTo','InboxRule.RedirectTo','InboxRule.ForwardAsAttachmentTo','InboxRule.DeleteMessage','InboxRule.MarkAsRead','InboxRule.StopProcessingRules','UserId','ClientIP','ResultStatus'],
   transport_rules:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','Name','Parameters','ResultStatus'],
   mailbox_permissions:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','MailboxOwnerUPN','Parameters','ResultStatus'],
-  email_access:['_Row','CreationTime','Operation','UserId','ClientIP','ClientIPAddress','MailboxOwnerUPN','Mail.ActorInfoString','Mail.UserAgent','Mail.ClientInfoString','UserAgent','SessionId','InternetMessageId','InternetMessageIDs','ItemName','FolderPathName','Subject','AffectedItems','Folders','Workload','ResultStatus'],
+  email_access:['_Row','CreationTime','Operation','UserId','ClientIP','ClientIPAddress','MailboxOwnerUPN','Mail.ActorInfoString','Mail.UserAgent','Mail.ClientInfoString','UserAgent','UserAgentString','AuditData.UserAgentString','SessionId','InternetMessageId','InternetMessageIDs','ItemName','FolderPathName','Subject','AffectedItems','Folders','Workload','ResultStatus'],
   file_access:['_Row','CreationTime','Operation','UserId','ClientIP','Workload','ObjectId','SiteUrl','SourceFileName','DestinationFileName','SourceRelativeUrl','DestinationRelativeUrl','ItemName','FolderPathName','UserAgent','ResultStatus'],
   other:PREFERRED_COLUMNS
 };
@@ -36,7 +36,7 @@ const MESSAGE_SUBJECT_COLUMNS=['MessageSubject.InternetMessageIDs','MessageSubje
 const IP_ENRICHMENT_SUFFIX_ORDER=['Country','Region','City','ISP','AS','Mobile','Proxy_VPN_TOR','Hosting'];
 const VIEW_DEFS=[['','All activity'],['logon','Logon'],['inbox_rules','Inbox rules'],['transport_rules','Transport rules'],['mailbox_permissions','Mailbox permissions'],['email_access','Email access'],['file_access','File access'],['other','Other']];
 const CATEGORY_MIGRATIONS={logins:'logon',files:'file_access',mail:'email_access',teams:'other'};
-const COLUMN_PREFERENCE_VERSION=6;
+const COLUMN_PREFERENCE_VERSION=7;
 const state = {caseId:null,caseMeta:null,ualId:null,ualDatasets:[],ualViews:{},overview:null,page:1,size:50,query:'',operation:'',category:'',sortField:'',sortDirection:'asc',columns:[],frozenColumns:[],currentRows:[],currentTotal:0,currentTagged:0};
 const MESSAGE_TRACE_PREFERRED=['_Row','Received','date_time_utc','SenderAddress','RecipientAddress','Subject','Status','MessageId','NetworkMessageId','OriginalClientIP','ClientIP','FromIP','ToIP','Directionality','Size'];
 const WHOIS_SUFFIX_ORDER=['Domain','RegisteredDomain','Registrar','RegistrationDate','ExpirationDate','LastChangedDate','Status','NameServers','DNSSEC','Lookup_Status','Error'];
@@ -125,6 +125,7 @@ function restoreColumnPreferences(overview){
     const newImportant=overview.columns.filter(c=>!known.includes(c) && (preferred.includes(c)||c.includes('_IPAPI_')));
     const migrationColumns=saved.version===COLUMN_PREFERENCE_VERSION?[]:preferred.filter(c=>/sessionid/i.test(c)||isAppIdColumn(c));
     let restored=[...visible,...migrationColumns.filter(c=>overview.columns.includes(c)&&!visible.includes(c)),...newImportant.filter(c=>!visible.includes(c))].slice(0,50);
+    if(restored.length&&preferred.includes('InboxRule.Name')&&saved.version!==COLUMN_PREFERENCE_VERSION)restored=addContextColumns(restored,['InboxRule.Name'],overview.columns);
     if(saved.version!==COLUMN_PREFERENCE_VERSION) restored=orderEnrichmentColumns(restored,overview.enrichmentColumns||[]);
     const result=restored.length?restored:defaults;
     state.frozenColumns=(Array.isArray(saved.frozen)?saved.frozen:[]).filter(column=>result.includes(column));
@@ -178,14 +179,16 @@ function switchWorkspaceTool(tool){
   const messageTrace=tool==='message-trace';
   const emailCollection=tool==='email-collection';
   const clientXlsx=tool==='client-xlsx';
+  const signinReview=tool==='signin-review';
   const documentation=tool==='documentation';
   $('#reviewNav').classList.toggle('active',review); $('#messageTraceNav').classList.toggle('active',messageTrace); $('#emailCollectionNav').classList.toggle('active',emailCollection); $('#clientXlsxNav').classList.toggle('active',clientXlsx); $('#documentationNav').classList.toggle('active',documentation);
   $('#reviewTab').classList.toggle('hidden',!review); $('#messageTraceTab').classList.toggle('hidden',!messageTrace); $('#emailCollectionTab').classList.toggle('hidden',!emailCollection); $('#clientXlsxTab').classList.toggle('hidden',!clientXlsx); $('#documentationTab').classList.toggle('hidden',!documentation);
+  $('#signinReviewNav').classList.toggle('active',signinReview);$('#signinReviewTab').classList.toggle('hidden',!signinReview);
   const activeUal=review&&Boolean(state.ualId)&&!$('#ualReview').classList.contains('hidden');
   const activeMtl=messageTrace&&Boolean(messageTraceState.traceId)&&!$('#messageTraceReview').classList.contains('hidden');
   $('#metrics').classList.toggle('hidden',!activeUal); $('#reviewActions').classList.toggle('hidden',!activeUal);
   $('#messageTraceActions').classList.toggle('hidden',!activeMtl);
-  $('#viewTitle').textContent=review?'UAL Review':messageTrace?'MTL Review':emailCollection?'Email Collection':clientXlsx?'Client XLSX':'Documentation';
+  $('#viewTitle').textContent=review?'UAL Review':messageTrace?'MTL Review':signinReview?'Sign-in Review':emailCollection?'Email Collection':clientXlsx?'Client XLSX':'Documentation';
 }
 function ualToolIsActive(){return !$('#reviewTab').classList.contains('hidden');}
 function mtlToolIsActive(){return !$('#messageTraceTab').classList.contains('hidden');}
@@ -232,12 +235,55 @@ $('#reviewNav').onclick=()=>switchWorkspaceTool('review');
 $('#messageTraceNav').onclick=()=>{switchWorkspaceTool('message-trace');loadMessageTraceOverview();};
 $('#emailCollectionNav').onclick=()=>switchWorkspaceTool('email-collection');
 $('#clientXlsxNav').onclick=()=>switchWorkspaceTool('client-xlsx');
+$('#signinReviewNav').onclick=()=>{switchWorkspaceTool('signin-review');renderSigninReview();};
 $('#documentationNav').onclick=()=>switchWorkspaceTool('documentation');
 
 $('#uploadForm').onsubmit=async e=>{
   e.preventDefault(); const status=$('#uploadStatus'); status.className='status'; status.textContent='Creating case…';
   try { const created=await api('/api/cases',{method:'POST',body:new FormData(e.target)}); status.textContent='Case ready.';e.target.reset();await openCase(created.id); }
   catch(error) { status.className='status error'; status.textContent=error.message; }
+};
+
+const signinReviewUi={running:false,caseId:null,results:{}};
+function renderSigninReview(){
+  const result=signinReviewUi.results[state.caseId],link=$('#signinReviewDownload'),status=$('#signinReviewStatus');
+  $('#signinReviewButton').disabled=signinReviewUi.running;
+  link.classList.toggle('hidden',!result);
+  if(result){link.href=`/api/cases/${state.caseId}/signin-reviews/${result.id}/download`;link.download=result.outputFilename;}
+  if(!signinReviewUi.running){status.className='status';status.textContent=result?`${Number(result.rowCount).toLocaleString()} ${result.rowCount===1?'row':'rows'} ready · ${result.outputFilename}`:'';}
+  else if(signinReviewUi.caseId!==state.caseId){status.textContent='A file is being processed in another case. Wait for it to finish before starting another.';$('#signinReviewProgress').classList.add('hidden');}
+  else{link.classList.add('hidden');$('#signinReviewProgress').classList.remove('hidden');status.textContent='Preparing sign-in review…';}
+}
+const signinFile=$('#signinReviewFile'),signinDropzone=$('#signinReviewDropzone');
+signinFile.onchange=()=>$('#signinReviewFileName').textContent=signinFile.files[0]?.name||'No file selected';
+['dragenter','dragover'].forEach(name=>signinDropzone.addEventListener(name,event=>{event.preventDefault();signinDropzone.classList.add('drag');}));
+['dragleave','drop'].forEach(name=>signinDropzone.addEventListener(name,event=>{event.preventDefault();signinDropzone.classList.remove('drag');}));
+signinDropzone.addEventListener('drop',event=>{signinFile.files=event.dataTransfer.files;signinFile.onchange();});
+$('#signinReviewForm').onsubmit=async event=>{
+  event.preventDefault();if(signinReviewUi.running)return;
+  const file=signinFile.files[0],caseId=state.caseId,status=$('#signinReviewStatus'),progress=$('#signinReviewProgress');
+  if(!file)return;
+  if(file.size>8*1024**3){status.className='status error';status.textContent='Sign-in Review supports CSV files up to 8 GiB';return;}
+  signinReviewUi.running=true;signinReviewUi.caseId=caseId;$('#signinReviewButton').disabled=true;
+  $('#signinReviewDownload').classList.add('hidden');status.className='status';status.textContent='Uploading login CSV…';progress.classList.remove('hidden');progress.value=0;
+  try{
+    const params=new URLSearchParams({filename:file.name,output:$('#signinReviewFilename').value.trim()});
+    let job=await new Promise((resolve,reject)=>{
+      const request=new XMLHttpRequest();request.open('POST',`/api/cases/${caseId}/signin-reviews?${params}`);request.setRequestHeader('Content-Type','application/octet-stream');request.responseType='json';
+      request.upload.onprogress=event=>{if(state.caseId===caseId&&event.lengthComputable){progress.value=event.loaded/event.total*100;status.textContent=`Uploading: ${(event.loaded/1024**2).toFixed(0)} / ${(event.total/1024**2).toFixed(0)} MiB`;}};
+      request.onload=()=>{if(request.status>=200&&request.status<300&&request.response)resolve(request.response);else reject(new Error(request.response?.error||`Upload failed (${request.status})`));};
+      request.onerror=()=>reject(new Error('Upload interrupted; check the local server'));request.onabort=()=>reject(new Error('Upload cancelled'));request.send(file);
+    });
+    progress.removeAttribute('value');
+    while(job.phase!=='complete'&&job.phase!=='failed'){
+      if(state.caseId===caseId)status.textContent=`Preparing sign-in review · ${Number(job.rows||0).toLocaleString()} rows processed…`;
+      await new Promise(resolve=>setTimeout(resolve,1000));job=await api(`/api/cases/${caseId}/signin-reviews/${job.id}`);
+    }
+    if(job.phase==='failed')throw new Error(job.error||'Sign-in processing failed');
+    signinReviewUi.results[caseId]=job.meta;
+    if(state.caseId===caseId)toast('Sign-in review CSV ready');
+  }catch(error){if(state.caseId===caseId){status.className='status error';status.textContent=error.message;}}
+  finally{signinReviewUi.running=false;$('#signinReviewButton').disabled=false;progress.classList.add('hidden');if(state.caseId===caseId&&status.className!=='status error')renderSigninReview();}
 };
 
 const clientXlsxFile=$('#clientXlsxFile'), clientXlsxDropzone=$('#clientXlsxDropzone');
@@ -328,15 +374,43 @@ async function loadUalOverview(preferredDatasetId=''){
   }catch(error){toast(error.message);}
 }
 const ualFile=$('#ualFile'),ualDropzone=$('#ualDropzone');
+let ualImportRunning=false;
 ualFile.onchange=()=>$('#ualFileName').textContent=ualFile.files[0]?.name||'No file selected';
 ['dragenter','dragover'].forEach(name=>ualDropzone.addEventListener(name,event=>{event.preventDefault();ualDropzone.classList.add('drag');}));
 ['dragleave','drop'].forEach(name=>ualDropzone.addEventListener(name,event=>{event.preventDefault();ualDropzone.classList.remove('drag');}));
 ualDropzone.addEventListener('drop',event=>{ualFile.files=event.dataTransfer.files;ualFile.onchange();});
 $('#ualForm').onsubmit=async event=>{
-  event.preventDefault();const status=$('#ualUploadStatus'),button=$('#ualUploadButton');status.className='status';status.textContent='Uploading and parsing UAL evidence…';button.disabled=true;
-  try{const created=await api(`/api/cases/${state.caseId}/ual-datasets`,{method:'POST',body:new FormData(event.target)});status.textContent='UAL dataset ready.';event.target.reset();$('#ualFileName').textContent='No file selected';await loadUalOverview(created.meta.id);toast('UAL dataset added');}
+  event.preventDefault();if(ualImportRunning)return;
+  const status=$('#ualUploadStatus'),button=$('#ualUploadButton'),file=ualFile.files[0],caseId=state.caseId,form=event.target;
+  status.className='status';status.textContent='Uploading and parsing UAL evidence…';button.disabled=true;ualImportRunning=true;
+  const progress=$('#ualImportProgress'),detail=$('#ualImportDetail');progress.classList.remove('hidden');detail.classList.remove('hidden');progress.value=0;progress.max=100;
+  try{
+    let created;
+    if(/\.(csv|txt|jsonl|ndjson)$/i.test(file.name)){
+      if(file.size>8*1024**3)throw new Error('Streaming UAL import supports files up to 8 GiB');
+      const params=new URLSearchParams({filename:file.name,name:$('#ualName').value});
+      let job=await new Promise((resolve,reject)=>{
+        const request=new XMLHttpRequest();request.open('POST',`/api/cases/${caseId}/ual-stream?${params}`);request.setRequestHeader('Content-Type','application/octet-stream');request.responseType='json';
+        request.upload.onprogress=event=>{if(event.lengthComputable){progress.value=event.loaded/event.total*100;detail.textContent=`Uploading: ${(event.loaded/1024**2).toFixed(0)} / ${(event.total/1024**2).toFixed(0)} MiB`;}};
+        request.onload=()=>{if(request.status>=200&&request.status<300&&request.response)resolve(request.response);else reject(new Error(request.response?.error||`Upload failed (${request.status})`));};
+        request.onerror=()=>reject(new Error('Upload interrupted; check that the local server is running'));
+        request.onabort=()=>reject(new Error('Upload cancelled'));request.send(file);
+      });
+      progress.removeAttribute('value');
+      while(job.phase!=='complete'&&job.phase!=='failed'){
+        status.textContent='Importing UAL into the local database…';detail.textContent=`${Number(job.rows||0).toLocaleString()} records imported. You can leave this dataset open while processing continues.`;
+        await new Promise(resolve=>setTimeout(resolve,1000));job=await api(`/api/cases/${caseId}/ual-imports/${job.id}`);
+      }
+      if(job.phase==='failed')throw new Error(job.error||'Import failed');
+      created={meta:job.meta};progress.value=100;detail.textContent=`${Number(job.rows).toLocaleString()} records imported into one dataset.`;
+    }else{
+      if(file.size>250*1024**2)throw new Error('For files over 250 MB, export as CSV or JSONL and use streaming import');
+      progress.removeAttribute('value');created=await api(`/api/cases/${caseId}/ual-datasets`,{method:'POST',body:new FormData(form)});
+    }
+    status.textContent='UAL dataset ready.';form.reset();$('#ualFileName').textContent='No file selected';if(state.caseId===caseId)await loadUalOverview(created.meta.id);toast('UAL dataset added');
+  }
   catch(error){status.className='status error';status.textContent=error.message;}
-  finally{button.disabled=false;}
+  finally{button.disabled=false;ualImportRunning=false;progress.classList.add('hidden');}
 };
 $('#ualReplace').onclick=()=>{$('#ualReview').classList.add('hidden');$('#ualUpload').classList.remove('hidden');$('#metrics').classList.add('hidden');$('#reviewActions').classList.add('hidden');ualFile.value='';$('#ualFileName').textContent='No file selected';$('#ualName').value='';};
 $('#ualCancelUpload').onclick=()=>{$('#ualUpload').classList.add('hidden');$('#ualReview').classList.remove('hidden');const show=ualToolIsActive();$('#metrics').classList.toggle('hidden',!show);$('#reviewActions').classList.toggle('hidden',!show);};
@@ -611,6 +685,7 @@ $('#messageTraceHuntButton').onclick=async()=>{
 };
 
 async function openCase(id) {
+  $('#signinReviewForm').reset();$('#signinReviewFileName').textContent='No file selected';$('#signinReviewProgress').classList.add('hidden');$('#signinReviewDownload').classList.add('hidden');$('#signinReviewStatus').textContent='';
   state.caseId=id;state.caseMeta=null;state.ualId=null;state.ualDatasets=[];state.ualViews={};state.overview=null;state.page=1;state.query='';state.operation='';state.category='';state.sortField='';state.sortDirection='asc';state.size=50;state.currentTotal=0;state.currentTagged=0;
   messageTraceState.overview=null;messageTraceState.traces=[];messageTraceState.traceId=null;messageTraceState.frozenColumns=[];messageTraceState.views={};
   const info=await api(`/api/cases/${id}/info`);state.caseMeta=info.meta;
@@ -703,7 +778,13 @@ $('#taggedAction').onclick=()=>{
   if(!count&&!clearing) return toast('No rows are tagged yet');
   state.query=clearing?'':'Review.Tag:="Of interest"'; $('#query').value=state.query;
   state.category=''; state.operation=''; state.page=1;
-  state.columns=clearing?restoreColumnPreferences(state.overview):addContextColumns(restoreColumnPreferences(state.overview),['Review.Tag'],state.overview.columns);
+  if(clearing){state.columns=restoreColumnPreferences(state.overview);}
+  else{
+    const context=['Review.Tag',...state.overview.columns.filter(column=>/^(?:Mail\.(?:ActorInfoString|UserAgent|ClientInfoString)|(?:AuditData\.)?(?:UserAgentString|UserAgent|ActorInfoString|ClientInfoString))$/i.test(column))];
+    const additions=context.filter(column=>state.overview.columns.includes(column)&&!state.columns.includes(column));
+    const insertAt=Math.min(3,state.columns.length);
+    state.columns=[...state.columns.slice(0,insertAt),...additions,...state.columns.slice(insertAt)];
+  }
   renderTaggedAction(); renderFacetControls(); renderPicker(); loadRows();
 };
 $('#tagFilteredAction').onclick=async()=>{

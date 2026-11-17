@@ -47,7 +47,7 @@ ALIASES = {
     "messageid": ["InternetMessageId", "InternetMessageIDs", "Item.InternetMessageId", "MessageSubject.InternetMessageIDs",
                   "MessageId", "NetworkMessageId"],
     "subject": ["Subject", "Item.Subject", "MessageSubject.Subjects", "MessageSubject.Pairs"],
-    "useragent": ["Mail.UserAgent", "ActorInfoString", "UserAgent", "ClientInfoString", "Login.UserAgent"],
+    "useragent": ["Mail.UserAgent", "ActorInfoString", "UserAgent", "UserAgentString", "AuditData.UserAgentString", "ClientInfoString", "Login.UserAgent"],
     "actorinfo": ["Mail.ActorInfoString", "ActorInfoString"],
     "result": ["ResultStatus", "Result", "LogonError", "Status"],
     "workload": ["Workload"],
@@ -290,27 +290,39 @@ def message_subject_export_rows(rows: List[Dict[str, Any]], include_size: bool =
 def add_inbox_rule_review(row: Dict[str, Any]) -> Dict[str, Any]:
     if "inboxrule" not in str(row.get("Operation", "")).lower():
         return row
-    parameters = []
-    for key, value in row.items():
-        if key.lower() in ("parameters", "auditdata.parameters"):
-            try:
-                parameters = json.loads(value) if isinstance(value, str) else value
-            except (json.JSONDecodeError, TypeError):
-                parameters = []
-            break
     values: Dict[str, Any] = {}
-    if isinstance(parameters, list):
-        for item in parameters:
-            if isinstance(item, dict) and item.get("Name"):
-                values[str(item["Name"])] = json_safe(item.get("Value", ""))
+    display_names = {}
+    for key, value in row.items():
+        if key.lower() in ("parameters", "auditdata.parameters", "operationproperties", "auditdata.operationproperties"):
+            try:
+                items = json.loads(value) if isinstance(value, str) else value
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(items, dict):
+                items = [items] if 'Name' in items and 'Value' in items else [{'Name': name, 'Value': item} for name, item in items.items()]
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    fields = {str(name).casefold(): item_value for name, item_value in item.items()}
+                    name = str(fields.get('name', ''))
+                    item_value = json_safe(fields.get('value', ''))
+                    if name and item_value != '':
+                        values.setdefault(name.casefold(), item_value)
+                        display_names.setdefault(name.casefold(), name)
+    rule_name = next((values[name] for name in ('name', 'rulename', 'inboxrulename') if str(values.get(name, '')).strip()), '')
+    if not rule_name:
+        rule_name = _populated_field(row, 'RuleName', 'InboxRuleName', 'AuditData.RuleName', 'AuditData.InboxRuleName')
     for source_name, display_name in INBOX_RULE_FIELDS.items():
         value = next((v for k, v in values.items() if k.lower() == source_name), "")
         if value == "":
-            value = next((v for k, v in row.items() if k.lower() == source_name), "")
+            value = next((v for k, v in row.items() if k.lower() in (source_name, f'auditdata.{source_name}') and v != ''), "")
         if value != "":
             row[f"InboxRule.{display_name}"] = value
+    if rule_name:
+        row['InboxRule.Name'] = rule_name
     noise = {"force", "alwaysdeleteoutlookrulesblob"}
-    details = [f"{key}={value}" for key, value in values.items() if key.lower() not in noise and str(value) != ""]
+    details = [f"{display_names.get(key, key)}={value}" for key, value in values.items() if key.lower() not in noise and str(value) != ""]
     if details:
         row["InboxRule.Details"] = "; ".join(details)
     return row
@@ -366,7 +378,7 @@ def add_mail_review(row: Dict[str, Any]) -> Dict[str, Any]:
     if not matches_event_category(row, "email_access"):
         return row
     actor = _populated_field(row, "ActorInfoString", "AuditData.ActorInfoString")
-    reported_agent = _populated_field(row, "UserAgent", "AuditData.UserAgent")
+    reported_agent = _populated_field(row, "UserAgent", "AuditData.UserAgent", "UserAgentString", "AuditData.UserAgentString")
     client = _populated_field(row, "ClientInfoString", "AuditData.ClientInfoString")
     if actor:
         row["Mail.ActorInfoString"] = actor
@@ -704,6 +716,24 @@ def _event_ip_context(row: Dict[str, Any], lookup: Dict[str, Any]) -> Tuple[str,
     return ip, context
 
 
+def _event_search_query(row: Dict[str, Any], lookup: Dict[str, Any]) -> str:
+    names = ('SearchQueryText', 'QueryText', 'SearchQuery.QueryText', 'Query.QueryText', 'SearchQuery', 'Query', 'SearchText')
+    for name in names:
+        for candidate in (name, f'AuditData.{name}'):
+            raw = lookup.get(candidate.casefold())
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+    for source in ('OperationProperties', 'Parameters', 'ExtendedProperties'):
+        for field in (source, f'AuditData.{source}'):
+            properties = _named_properties(row, (field.casefold(),))
+            lowered = {key.casefold(): value for key, value in properties.items()}
+            for name in names:
+                raw = lowered.get(name.casefold())
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+    return ''
+
+
 def build_event_summary(row: Dict[str, Any]) -> str:
     lookup = {str(key).casefold(): value for key, value in row.items()}
     value = lambda *names: _event_value(row, *names, lookup=lookup)
@@ -717,6 +747,11 @@ def build_event_summary(row: Dict[str, Any]) -> str:
     if user: clauses.append(user)
     if ip: clauses.append(f"from IP {ip}")
     clauses.extend(ip_context)
+
+    if operation.casefold() in ('searchqueryperformed', 'searchqueryinitiatedexchange', 'searchqueryinitiatedsharepoint'):
+        query_text = _event_search_query(row, lookup)
+        if query_text:
+            clauses.append(f'search query: {query_text}')
 
     is_login = matches_event_category(row, "logins")
     if is_login:

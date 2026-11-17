@@ -1,9 +1,17 @@
 import unittest
 
-from ual_app.core import add_mail_review
+from ual_app.core import add_mail_review, compile_query
 
 
 class MailReviewTests(unittest.TestCase):
+    def test_mail_items_accessed_user_agent_string(self):
+        for field in ("UserAgentString", "AuditData.UserAgentString"):
+            with self.subTest(field=field):
+                row = {"Operation": "MailItemsAccessed", field: "SyntheticMailClient/3.0"}
+                self.assertEqual(add_mail_review(row)["Mail.UserAgent"], "SyntheticMailClient/3.0")
+                self.assertEqual(row[field], "SyntheticMailClient/3.0")
+                self.assertTrue(compile_query('useragent:="SyntheticMailClient/3.0"')(row))
+
     def test_extracts_true_user_agent_from_actor_info_string(self):
         row = {
             "Operation": "MailItemsAccessed",
